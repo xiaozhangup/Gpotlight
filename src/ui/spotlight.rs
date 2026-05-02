@@ -499,7 +499,7 @@ fn install_css() {
         .spotlight-panel {
             border: 1px solid alpha(@theme_fg_color, 0.16);
             border-radius: 18px;
-            padding: 14px 10px 14px 10px;
+            padding: 10px 10px 10px 10px;
             box-shadow: 0 18px 48px alpha(black, 0.34);
         }
         window.system-light .spotlight-panel {
