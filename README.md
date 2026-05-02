@@ -1,12 +1,12 @@
 # Gpotlight
 
-Gpotlight is a Spotlight-style launcher for GNOME 50 on Wayland, built with Rust and GTK4.
+Gpotlight is a Spotlight-style launcher for GNOME 50 on Wayland, built with Rust, GTK4, and libadwaita.
 
 The app uses a large transparent GTK window as a centered container. GNOME centers that window, while the visible launcher surface is rendered near the upper center inside it. This avoids compositor-specific positioning hacks on Wayland.
 
 ## Current Architecture
 
-- GTK4 UI with a transparent host window and visible launcher panel.
+- GTK4/libadwaita UI with a transparent host window and visible launcher panel.
 - Config file stored under `$XDG_CONFIG_HOME/gpotlight/config.toml`.
 - Plugin registry with built-in plugins and an extension point for external plugins.
 - Global shortcut portal adapter for `org.freedesktop.portal.GlobalShortcuts`.
@@ -22,6 +22,7 @@ cargo build
 Runtime dependencies expected on GNOME:
 
 - GTK 4
+- libadwaita
 - xdg-desktop-portal with GlobalShortcuts support
 - A StatusNotifierItem/AppIndicator shell extension if your GNOME session does not show tray icons by default
 
@@ -35,6 +36,12 @@ Toggle a running instance without starting a new UI:
 
 ```sh
 gpotlight toggle
+```
+
+Open settings in a running instance without starting a new UI:
+
+```sh
+gpotlight settings
 ```
 
 For GNOME portal permissions when running a debug build manually, install the

@@ -8,6 +8,10 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub locale: String,
     pub shortcut: String,
+    #[serde(default = "default_shortcuts_enabled")]
+    pub shortcuts_enabled: bool,
+    #[serde(default = "default_tray_enabled")]
+    pub tray_enabled: bool,
     pub window: WindowConfig,
     pub plugins: IndexMap<String, PluginConfig>,
 }
@@ -32,6 +36,8 @@ impl Default for AppConfig {
         Self {
             locale: "zh-CN".to_string(),
             shortcut: "LOGO+space".to_string(),
+            shortcuts_enabled: default_shortcuts_enabled(),
+            tray_enabled: default_tray_enabled(),
             window: WindowConfig {
                 host_width: 960,
                 host_height: 620,
@@ -46,6 +52,14 @@ impl Default for AppConfig {
 
 fn default_max_visible_results() -> i32 {
     6
+}
+
+fn default_shortcuts_enabled() -> bool {
+    true
+}
+
+fn default_tray_enabled() -> bool {
+    true
 }
 
 pub struct ConfigStore {

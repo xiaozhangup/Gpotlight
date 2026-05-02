@@ -75,7 +75,11 @@ pub fn activate_result(result: &SearchResult, window: &gtk::Window) {
     match &result.action {
         PluginAction::LaunchDesktopFile(desktop_id) => {
             let ctx = gio::AppLaunchContext::new();
-            if let Some(info) = gio::DesktopAppInfo::new(desktop_id) {
+            if let Some(info) = gio::AppInfo::all().into_iter().find(|app| {
+                app.id()
+                    .map(|id| id.as_str() == desktop_id)
+                    .unwrap_or(false)
+            }) {
                 if let Err(err) = info.launch(&[], Some(&ctx)) {
                     tracing::warn!(error = ?err, desktop_id, "failed to launch desktop file");
                 }

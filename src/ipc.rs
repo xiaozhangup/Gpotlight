@@ -8,8 +8,17 @@ use std::time::Duration;
 
 const SOCKET_NAME: &str = "gpotlight.sock";
 const COMMAND_TOGGLE: &[u8] = b"toggle\n";
+const COMMAND_SETTINGS: &[u8] = b"settings\n";
 
 pub fn send_toggle_if_running() {
+    send_command_if_running(COMMAND_TOGGLE);
+}
+
+pub fn send_settings_if_running() {
+    send_command_if_running(COMMAND_SETTINGS);
+}
+
+fn send_command_if_running(command: &[u8]) {
     let Ok(path) = socket_path() else {
         return;
     };
@@ -19,12 +28,13 @@ pub fn send_toggle_if_running() {
     };
 
     let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
-    let _ = stream.write_all(COMMAND_TOGGLE);
+    let _ = stream.write_all(command);
 }
 
-pub fn spawn_toggle_server<F>(on_toggle: F) -> Result<()>
+pub fn spawn_toggle_server<T, S>(on_toggle: T, on_settings: S) -> Result<()>
 where
-    F: Fn() + 'static,
+    T: Fn() + 'static,
+    S: Fn() + 'static,
 {
     let path = socket_path()?;
     if path.exists() {
@@ -46,6 +56,8 @@ where
                     if let Ok(size) = stream.read(&mut buffer) {
                         if buffer[..size].starts_with(COMMAND_TOGGLE) {
                             let _ = sender.send(IpcCommand::Toggle);
+                        } else if buffer[..size].starts_with(COMMAND_SETTINGS) {
+                            let _ = sender.send(IpcCommand::Settings);
                         }
                     }
                 }
@@ -58,6 +70,7 @@ where
         while let Ok(command) = receiver.try_recv() {
             match command {
                 IpcCommand::Toggle => on_toggle(),
+                IpcCommand::Settings => on_settings(),
             }
         }
         glib::ControlFlow::Continue
@@ -68,6 +81,7 @@ where
 
 enum IpcCommand {
     Toggle,
+    Settings,
 }
 
 fn socket_path() -> Result<PathBuf> {

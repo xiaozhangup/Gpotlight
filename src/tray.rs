@@ -1,48 +1,97 @@
 use crate::i18n::I18n;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-pub struct Tray;
+pub struct TrayManager {
+    #[cfg(feature = "tray")]
+    i18n: Rc<I18n>,
+    #[cfg(feature = "tray")]
+    on_toggle: Rc<dyn Fn()>,
+    #[cfg(feature = "tray")]
+    on_settings: Rc<dyn Fn()>,
+    #[cfg(feature = "tray")]
+    on_quit: Rc<dyn Fn()>,
+    #[cfg(feature = "tray")]
+    handle: RefCell<Option<ksni::blocking::Handle<TrayService>>>,
+}
 
 #[cfg(feature = "tray")]
-impl Tray {
-    pub fn spawn<T, S, Q>(i18n: Rc<I18n>, on_toggle: T, on_settings: S, on_quit: Q)
+impl TrayManager {
+    pub fn new<T, S, Q>(i18n: Rc<I18n>, on_toggle: T, on_settings: S, on_quit: Q) -> Self
     where
         T: Fn() + 'static,
         S: Fn() + 'static,
         Q: Fn() + 'static,
     {
+        Self {
+            i18n,
+            on_toggle: Rc::new(on_toggle),
+            on_settings: Rc::new(on_settings),
+            on_quit: Rc::new(on_quit),
+            handle: RefCell::new(None),
+        }
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        if enabled {
+            self.spawn();
+        } else {
+            self.shutdown();
+        }
+    }
+
+    fn spawn(&self) {
+        if self
+            .handle
+            .borrow()
+            .as_ref()
+            .is_some_and(|handle| !handle.is_closed())
+        {
+            return;
+        }
+
+        let i18n = self.i18n.clone();
         let title = i18n.t("app_name");
         let open_settings = i18n.t("open_settings");
         let quit = i18n.t("quit");
         let (sender, receiver) = mpsc::channel::<TrayCommand>();
 
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            while let Ok(command) = receiver.try_recv() {
-                match command {
-                    TrayCommand::Toggle => on_toggle(),
-                    TrayCommand::Settings => on_settings(),
-                    TrayCommand::Quit => on_quit(),
-                }
-            }
-            glib::ControlFlow::Continue
-        });
-
-        std::thread::spawn(move || {
-            use ksni::blocking::TrayMethods;
-
-            let service = TrayService {
-                title,
-                sender,
-                open_settings,
-                quit,
-            };
-
-            if let Err(err) = service.assume_sni_available(true).spawn() {
-                tracing::warn!(error = ?err, "failed to spawn tray service");
+        let on_toggle = self.on_toggle.clone();
+        let on_settings = self.on_settings.clone();
+        let on_quit = self.on_quit.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || loop {
+            match receiver.try_recv() {
+                Ok(TrayCommand::Toggle) => on_toggle(),
+                Ok(TrayCommand::Settings) => on_settings(),
+                Ok(TrayCommand::Quit) => on_quit(),
+                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
             }
         });
+
+        use ksni::blocking::TrayMethods;
+
+        let service = TrayService {
+            title,
+            sender,
+            open_settings,
+            quit,
+        };
+
+        match service.assume_sni_available(true).spawn() {
+            Ok(handle) => {
+                self.handle.replace(Some(handle));
+            }
+            Err(err) => tracing::warn!(error = ?err, "failed to spawn tray service"),
+        }
+    }
+
+    fn shutdown(&self) {
+        if let Some(handle) = self.handle.borrow_mut().take() {
+            handle.shutdown().wait();
+        }
     }
 }
 
@@ -106,12 +155,15 @@ impl ksni::Tray for TrayService {
 }
 
 #[cfg(not(feature = "tray"))]
-impl Tray {
-    pub fn spawn<T, S, Q>(_i18n: Rc<I18n>, _on_toggle: T, _on_settings: S, _on_quit: Q)
+impl TrayManager {
+    pub fn new<T, S, Q>(_i18n: Rc<I18n>, _on_toggle: T, _on_settings: S, _on_quit: Q) -> Self
     where
         T: Fn() + 'static,
         S: Fn() + 'static,
         Q: Fn() + 'static,
     {
+        Self {}
     }
+
+    pub fn set_enabled(&self, _enabled: bool) {}
 }

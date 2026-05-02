@@ -3,42 +3,92 @@ use crate::i18n::I18n;
 use crate::plugin::SharedRegistry;
 use crate::shortcut::GlobalShortcutManager;
 use crate::theme;
+use crate::tray::TrayManager;
 use crate::ui::SpotlightWindow;
-use gtk::prelude::*;
+use adw::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct SettingsWindow {
-    window: gtk::ApplicationWindow,
+    window: adw::ApplicationWindow,
 }
 
 impl SettingsWindow {
     pub fn new(
-        app: &gtk::Application,
+        app: &adw::Application,
         i18n: Rc<I18n>,
         config: Rc<RefCell<ConfigStore>>,
         plugins: SharedRegistry,
         spotlight: Rc<SpotlightWindow>,
         shortcut_manager: Rc<GlobalShortcutManager>,
+        tray_manager: Rc<TrayManager>,
     ) -> Self {
-        let window = gtk::ApplicationWindow::builder()
+        let window = adw::ApplicationWindow::builder()
             .application(app)
             .title(i18n.t("settings"))
             .default_width(560)
-            .default_height(620)
+            .default_height(480)
             .build();
         window.set_hide_on_close(true);
+        window.set_resizable(true);
         theme::apply_to_window(&window);
+
+        let title = i18n.t("settings");
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::builder()
+            .title_widget(&adw::WindowTitle::new(&title, ""))
+            .show_start_title_buttons(true)
+            .show_end_title_buttons(true)
+            .build();
+        toolbar.add_top_bar(&header);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 18);
         root.set_margin_top(24);
         root.set_margin_bottom(24);
         root.set_margin_start(24);
         root.set_margin_end(24);
+        root.set_hexpand(true);
 
         let shortcut_label = section_title(&i18n.t("shortcut"));
+        let shortcut_enabled = gtk::Switch::new();
+        shortcut_enabled.set_active(config.borrow().current().shortcuts_enabled);
+        shortcut_enabled.set_halign(gtk::Align::Start);
+        shortcut_enabled.set_valign(gtk::Align::Center);
+        {
+            let config = config.clone();
+            let shortcut_manager = shortcut_manager.clone();
+            shortcut_enabled.connect_active_notify(move |switch| {
+                let enabled = switch.is_active();
+                let shortcut = config.borrow().current().shortcut.clone();
+                if let Err(err) = config
+                    .borrow_mut()
+                    .update(|cfg| cfg.shortcuts_enabled = enabled)
+                {
+                    tracing::warn!(error = ?err, "failed to save shortcut enabled state");
+                } else {
+                    shortcut_manager.set_enabled(enabled, shortcut);
+                }
+            });
+        }
         let shortcut =
             shortcut_capture_button(config.clone(), i18n.clone(), shortcut_manager.clone());
+
+        let tray_enabled = gtk::Switch::new();
+        tray_enabled.set_active(config.borrow().current().tray_enabled);
+        tray_enabled.set_halign(gtk::Align::Start);
+        tray_enabled.set_valign(gtk::Align::Center);
+        {
+            let config = config.clone();
+            let tray_manager = tray_manager.clone();
+            tray_enabled.connect_active_notify(move |switch| {
+                let enabled = switch.is_active();
+                if let Err(err) = config.borrow_mut().update(|cfg| cfg.tray_enabled = enabled) {
+                    tracing::warn!(error = ?err, "failed to save tray enabled state");
+                } else {
+                    tray_manager.set_enabled(enabled);
+                }
+            });
+        }
 
         let window_label = section_title(&i18n.t("window_position"));
         let offset = gtk::SpinButton::with_range(24.0, 240.0, 4.0);
@@ -132,7 +182,11 @@ impl SettingsWindow {
         }
 
         root.append(&shortcut_label);
+        root.append(&gtk::Label::new(Some(&i18n.t("enable_shortcut"))));
+        root.append(&shortcut_enabled);
         root.append(&shortcut);
+        root.append(&gtk::Label::new(Some(&i18n.t("enable_tray"))));
+        root.append(&tray_enabled);
         root.append(&window_label);
         root.append(&gtk::Label::new(Some("Y offset")));
         root.append(&offset);
@@ -142,7 +196,16 @@ impl SettingsWindow {
         root.append(&max_results);
         root.append(&plugins_label);
         root.append(&plugins_box);
-        window.set_child(Some(&root));
+
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&root)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        toolbar.set_content(Some(&scrolled));
+        window.set_content(Some(&toolbar));
 
         Self { window }
     }
@@ -171,11 +234,16 @@ fn shortcut_capture_button(
     let capturing = Rc::new(RefCell::new(false));
     {
         let capturing = capturing.clone();
+        let config = config.clone();
         let i18n = i18n.clone();
+        let shortcut_manager = shortcut_manager.clone();
         button.connect_clicked(move |button| {
             *capturing.borrow_mut() = true;
             button.set_label(&i18n.t("press_shortcut"));
             button.grab_focus();
+
+            let shortcut = config.borrow().current().shortcut.clone();
+            shortcut_manager.set_enabled(false, shortcut);
         });
     }
 
@@ -184,6 +252,7 @@ fn shortcut_capture_button(
         let button = button.clone();
         let config = config.clone();
         let capturing = capturing.clone();
+        let shortcut_manager = shortcut_manager.clone();
         key.connect_key_pressed(move |_, key, _, modifiers| {
             if !*capturing.borrow() {
                 return glib::Propagation::Proceed;
@@ -191,7 +260,9 @@ fn shortcut_capture_button(
 
             if key == gtk::gdk::Key::Escape {
                 *capturing.borrow_mut() = false;
-                button.set_label(&config.borrow().current().shortcut);
+                let current = config.borrow().current().clone();
+                button.set_label(&current.shortcut);
+                shortcut_manager.set_enabled(current.shortcuts_enabled, current.shortcut);
                 return glib::Propagation::Stop;
             }
 
@@ -203,7 +274,8 @@ fn shortcut_capture_button(
                 {
                     tracing::warn!(error = ?err, "failed to save shortcut");
                 } else {
-                    shortcut_manager.rebind(shortcut);
+                    let enabled = config.borrow().current().shortcuts_enabled;
+                    shortcut_manager.set_enabled(enabled, shortcut);
                 }
                 *capturing.borrow_mut() = false;
                 return glib::Propagation::Stop;

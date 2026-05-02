@@ -11,12 +11,14 @@ URL:            https://github.com/gpotlight/gpotlight
 BuildRequires:  cargo
 BuildRequires:  rust
 BuildRequires:  gtk4-devel
+BuildRequires:  libadwaita-devel
 BuildRequires:  glib2-devel
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  dbus-devel
 BuildRequires:  openssl-devel
 
 Requires:       gtk4
+Requires:       libadwaita
 Requires:       glib2
 
 %description

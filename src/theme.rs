@@ -1,5 +1,4 @@
-use gio::prelude::*;
-use gtk::prelude::*;
+use adw::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemTheme {
@@ -7,35 +6,27 @@ pub enum SystemTheme {
     Dark,
 }
 
-pub fn current_system_theme() -> SystemTheme {
-    let settings = gio::Settings::new("org.gnome.desktop.interface");
-    match settings.string("color-scheme").as_str() {
-        "prefer-dark" => SystemTheme::Dark,
-        _ => SystemTheme::Light,
-    }
-}
-
 pub fn apply_to_window(window: &impl IsA<gtk::Window>) {
-    apply_theme(current_system_theme(), Some(window));
+    let style_manager = adw::StyleManager::default();
+    style_manager.set_color_scheme(adw::ColorScheme::Default);
+    apply_theme(style_manager.is_dark(), Some(window));
 
-    let settings = gio::Settings::new("org.gnome.desktop.interface");
     let window = window.clone().upcast::<gtk::Window>();
-    settings.connect_changed(Some("color-scheme"), move |settings, _| {
-        let theme = match settings.string("color-scheme").as_str() {
-            "prefer-dark" => SystemTheme::Dark,
-            _ => SystemTheme::Light,
-        };
-        apply_theme(theme, Some(&window));
+    style_manager.connect_dark_notify(move |manager| {
+        apply_theme(manager.is_dark(), Some(&window));
     });
 }
 
-fn apply_theme(theme: SystemTheme, window: Option<&impl IsA<gtk::Window>>) {
-    if let Some(settings) = gtk::Settings::default() {
-        settings.set_gtk_application_prefer_dark_theme(theme == SystemTheme::Dark);
-    }
-
+fn apply_theme(is_dark: bool, window: Option<&impl IsA<gtk::Window>>) {
     if let Some(window) = window {
-        apply_theme_class(window, theme);
+        apply_theme_class(
+            window,
+            if is_dark {
+                SystemTheme::Dark
+            } else {
+                SystemTheme::Light
+            },
+        );
     }
 }
 

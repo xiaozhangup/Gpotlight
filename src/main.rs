@@ -8,8 +8,8 @@ mod theme;
 mod tray;
 mod ui;
 
+use adw::prelude::*;
 use app::GpotlightApp;
-use gtk::prelude::*;
 
 const APP_ID: &str = "io.github.gpotlight.Gpotlight";
 
@@ -19,11 +19,16 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
 
+    if std::env::args().nth(1).as_deref() == Some("settings") {
+        ipc::send_settings_if_running();
+        return glib::ExitCode::SUCCESS;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|gtk_app| {
         if let Err(err) = GpotlightApp::new(gtk_app).and_then(|app| app.start()) {

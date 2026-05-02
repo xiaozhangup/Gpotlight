@@ -22,7 +22,7 @@ pub struct SpotlightWindow {
 
 impl SpotlightWindow {
     pub fn new(
-        app: &gtk::Application,
+        app: &impl IsA<gtk::Application>,
         i18n: Rc<I18n>,
         config: Rc<RefCell<ConfigStore>>,
         plugins: SharedRegistry,
@@ -68,7 +68,7 @@ impl SpotlightWindow {
 
         let scroll_indicator = gtk::DrawingArea::new();
         scroll_indicator.add_css_class("result-scroll-indicator");
-        scroll_indicator.set_content_width(4);
+        scroll_indicator.set_content_width(6);
         scroll_indicator.set_hexpand(false);
         scroll_indicator.set_valign(gtk::Align::Fill);
         scroll_indicator.set_visible(false);
@@ -225,34 +225,33 @@ impl SpotlightWindow {
                 return glib::Propagation::Proceed;
             }
 
-            let visible_count = visible_result_count(
-                results_ref.len(),
-                config.borrow().current().window.max_visible_results,
-            );
-            if results_ref.len() <= visible_count {
-                return glib::Propagation::Proceed;
-            }
-
-            let current = *result_offset.borrow();
-            let max_offset = results_ref.len().saturating_sub(visible_count);
-            let next = if dy > 0.0 {
-                (current + 1).min(max_offset)
+            let current_selected = *selected_index.borrow();
+            let next_selected = if dy > 0.0 {
+                (current_selected + 1).min(results_ref.len() - 1)
             } else if dy < 0.0 {
-                current.saturating_sub(1)
+                current_selected.saturating_sub(1)
             } else {
-                current
+                current_selected
             };
 
-            if next != current {
-                *result_offset.borrow_mut() = next;
-                *selected_index.borrow_mut() = next;
+            if next_selected != current_selected {
+                let visible_count = visible_result_count(
+                    results_ref.len(),
+                    config.borrow().current().window.max_visible_results,
+                );
+                let current_offset = *result_offset.borrow();
+                let next_offset =
+                    offset_for_selection(current_offset, next_selected, visible_count);
+
+                *selected_index.borrow_mut() = next_selected;
+                *result_offset.borrow_mut() = next_offset;
                 render_results(
                     &list,
                     &results_view,
                     &scroll_indicator,
                     &results_ref,
-                    next,
-                    next,
+                    next_offset,
+                    next_selected,
                     config.borrow().current().window.max_visible_results,
                 );
             }
@@ -437,14 +436,60 @@ fn draw_scroll_indicator(
     let thumb_height = (visible / total * track_height).clamp(18.0, track_height);
     let max_offset = (total - visible).max(1.0);
     let thumb_top = ((track_height - thumb_height) * (offset / max_offset)).round();
+    let track_width = 3.0_f64.min(width);
+    let x = ((width - track_width) / 2.0).round();
+    let radius = track_width / 2.0;
+    let is_dark = adw::StyleManager::default().is_dark();
 
-    cr.set_source_rgba(0.5, 0.5, 0.5, 0.18);
-    cr.rectangle(0.0, 0.0, width, track_height);
+    if is_dark {
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+    } else {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.06);
+    }
+    rounded_rect(cr, x, 0.0, track_width, track_height, radius);
     let _ = cr.fill();
 
-    cr.set_source_rgba(0.5, 0.5, 0.5, 0.62);
-    cr.rectangle(0.0, thumb_top, width, thumb_height);
+    if is_dark {
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.42);
+    } else {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.34);
+    }
+    rounded_rect(cr, x, thumb_top, track_width, thumb_height, radius);
     let _ = cr.fill();
+}
+
+fn rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
+    let radius = radius.min(width / 2.0).min(height / 2.0);
+    cr.new_sub_path();
+    cr.arc(
+        x + width - radius,
+        y + radius,
+        radius,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    );
+    cr.arc(
+        x + width - radius,
+        y + height - radius,
+        radius,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    cr.arc(
+        x + radius,
+        y + height - radius,
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    cr.arc(
+        x + radius,
+        y + radius,
+        radius,
+        std::f64::consts::PI,
+        std::f64::consts::PI * 1.5,
+    );
+    cr.close_path();
 }
 
 fn result_row(result: &SearchResult) -> gtk::ListBoxRow {
@@ -525,11 +570,12 @@ fn install_css() {
         }
         .result-scroll-indicator {
             margin-top: 6px;
-            min-width: 4px;
+            min-width: 6px;
         }
         .spotlight-results row {
             border-radius: 10px;
             margin-top: 4px;
+            transition: background-color 80ms ease-out;
         }
         .spotlight-results row:first-child {
             margin-top: 6px;
@@ -547,6 +593,7 @@ fn install_css() {
             padding: 4px 8px;
             border-radius: 10px;
             min-height: 44px;
+            transition: background-color 80ms ease-out;
         }
         .result-title {
             font-weight: 600;

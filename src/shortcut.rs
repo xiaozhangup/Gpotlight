@@ -15,6 +15,7 @@ impl GlobalShortcutManager {
         F: Fn() + 'static,
     {
         let shortcut = config.borrow().current().shortcut.clone();
+        let enabled = config.borrow().current().shortcuts_enabled;
 
         #[cfg(feature = "portal-shortcuts")]
         {
@@ -28,11 +29,13 @@ impl GlobalShortcutManager {
 
             let (command_sender, command_receiver) =
                 tokio::sync::mpsc::unbounded_channel::<ShortcutCommand>();
-            if command_sender
-                .send(ShortcutCommand::Rebind(shortcut.clone()))
-                .is_err()
-            {
-                tracing::warn!("failed to queue initial global shortcut binding");
+            if enabled {
+                if command_sender
+                    .send(ShortcutCommand::Rebind(shortcut.clone()))
+                    .is_err()
+                {
+                    tracing::warn!("failed to queue initial global shortcut binding");
+                }
             }
 
             std::thread::spawn(move || {
@@ -63,18 +66,21 @@ impl GlobalShortcutManager {
         }
     }
 
-    pub fn rebind(&self, shortcut: String) {
+    pub fn set_enabled(&self, enabled: bool, shortcut: String) {
         #[cfg(feature = "portal-shortcuts")]
-        if self
-            .command_sender
-            .send(ShortcutCommand::Rebind(shortcut.clone()))
-            .is_err()
         {
-            tracing::warn!(shortcut, "failed to request global shortcut rebind");
+            let command = if enabled {
+                ShortcutCommand::Rebind(shortcut.clone())
+            } else {
+                ShortcutCommand::Disable
+            };
+            if self.command_sender.send(command).is_err() {
+                tracing::warn!(enabled, shortcut, "failed to update global shortcut state");
+            }
         }
 
         #[cfg(not(feature = "portal-shortcuts"))]
-        let _ = shortcut;
+        let _ = (enabled, shortcut);
     }
 }
 
@@ -82,13 +88,16 @@ impl GlobalShortcutManager {
 #[derive(Debug)]
 enum ShortcutCommand {
     Rebind(String),
+    Disable,
 }
 
 #[cfg(feature = "portal-shortcuts")]
 mod portal_shortcuts {
     use super::ShortcutCommand;
     use anyhow::Result;
-    use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
+    use ashpd::desktop::global_shortcuts::{
+        BindShortcutsOptions, GlobalShortcuts, ListShortcutsOptions, NewShortcut,
+    };
     use ashpd::desktop::{CreateSessionOptions, Session};
     use futures_util::StreamExt;
     use std::sync::mpsc;
@@ -121,14 +130,28 @@ mod portal_shortcuts {
                     if let Some(registration) = registration.take() {
                         registration.close().await;
                     }
+                    cleanup_previous_bindings(&portal).await;
+                    let shortcut_id = shortcut_id_for(&shortcut);
 
-                    match Registration::bind(&portal, &shortcut, toggle_sender.clone()).await {
+                    match Registration::bind(
+                        &portal,
+                        &shortcut_id,
+                        &shortcut,
+                        toggle_sender.clone(),
+                    )
+                    .await
+                    {
                         Ok(next) => registration = Some(next),
                         Err(err) => tracing::warn!(
                             error = ?err,
                             shortcut,
                             "failed to register global shortcut"
                         ),
+                    }
+                }
+                ShortcutCommand::Disable => {
+                    if let Some(registration) = registration.take() {
+                        registration.close().await;
                     }
                 }
             }
@@ -139,14 +162,77 @@ mod portal_shortcuts {
         }
     }
 
+    async fn cleanup_previous_bindings(portal: &GlobalShortcuts) {
+        let session = match portal.create_session(CreateSessionOptions::default()).await {
+            Ok(session) => session,
+            Err(err) => {
+                tracing::debug!(error = ?err, "failed to create cleanup shortcut session");
+                return;
+            }
+        };
+
+        match portal
+            .list_shortcuts(&session, ListShortcutsOptions::default())
+            .await
+        {
+            Ok(request) => match request.response() {
+                Ok(response) => {
+                    for shortcut in response
+                        .shortcuts()
+                        .iter()
+                        .filter(|shortcut| shortcut.id().starts_with("toggle-"))
+                    {
+                        tracing::info!(
+                            shortcut_id = shortcut.id(),
+                            trigger = shortcut.trigger_description(),
+                            "found previous global shortcut binding"
+                        );
+                    }
+                }
+                Err(err) => tracing::debug!(
+                    error = ?err,
+                    "failed to read previous global shortcut bindings"
+                ),
+            },
+            Err(err) => tracing::debug!(
+                error = ?err,
+                "failed to request previous global shortcut bindings"
+            ),
+        }
+
+        match portal
+            .bind_shortcuts(&session, &[], None, BindShortcutsOptions::default())
+            .await
+        {
+            Ok(request) => {
+                if let Err(err) = request.response() {
+                    tracing::debug!(
+                        error = ?err,
+                        "portal rejected empty global shortcut cleanup binding"
+                    );
+                }
+            }
+            Err(err) => tracing::debug!(
+                error = ?err,
+                "failed to request empty global shortcut cleanup binding"
+            ),
+        }
+
+        if let Err(err) = session.close().await {
+            tracing::debug!(error = ?err, "failed to close cleanup shortcut session");
+        }
+    }
+
     struct Registration {
         session: Session<GlobalShortcuts>,
+        shortcut_id: String,
         listener: tokio::task::JoinHandle<()>,
     }
 
     impl Registration {
         async fn bind(
             portal: &GlobalShortcuts,
+            shortcut_id: &str,
             shortcut: &str,
             toggle_sender: mpsc::Sender<()>,
         ) -> Result<Self> {
@@ -154,7 +240,7 @@ mod portal_shortcuts {
                 .create_session(CreateSessionOptions::default())
                 .await?;
             let preferred_trigger = portal_trigger(shortcut);
-            let shortcuts = [NewShortcut::new("toggle", "Toggle Gpotlight")
+            let shortcuts = [NewShortcut::new(shortcut_id, "Toggle Gpotlight")
                 .preferred_trigger(preferred_trigger.as_deref())];
 
             let request = portal
@@ -178,23 +264,44 @@ mod portal_shortcuts {
             }
 
             let mut stream = portal.receive_activated().await?;
+            let shortcut_id = shortcut_id.to_string();
+            let active_shortcut_id = shortcut_id.clone();
             let listener = tokio::spawn(async move {
                 while let Some(activated) = stream.next().await {
-                    if activated.shortcut_id() == "toggle" && toggle_sender.send(()).is_err() {
+                    if activated.shortcut_id() == active_shortcut_id
+                        && toggle_sender.send(()).is_err()
+                    {
                         break;
                     }
                 }
             });
 
-            Ok(Self { session, listener })
+            Ok(Self {
+                session,
+                shortcut_id,
+                listener,
+            })
         }
 
         async fn close(self) {
             self.listener.abort();
             if let Err(err) = self.session.close().await {
-                tracing::warn!(error = ?err, "failed to close global shortcut session");
+                tracing::warn!(
+                    error = ?err,
+                    shortcut_id = self.shortcut_id,
+                    "failed to close global shortcut session"
+                );
             }
         }
+    }
+
+    fn shortcut_id_for(shortcut: &str) -> String {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in shortcut.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("toggle-{hash:x}")
     }
 
     fn portal_trigger(shortcut: &str) -> Option<String> {
