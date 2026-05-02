@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Gpotlight
+Comment=Spotlight-style launcher for GNOME
+Exec=gpotlight
+Icon=system-search
+Categories=Utility;GTK;
+StartupNotify=false
+DBusActivatable=false

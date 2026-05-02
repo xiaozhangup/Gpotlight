@@ -1,0 +1,30 @@
+[package]
+name = "gpotlight"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A GNOME Wayland Spotlight-style launcher written with Rust and GTK4."
+
+[dependencies]
+anyhow = "1.0"
+ashpd = { version = "0.13", features = ["global_shortcuts"] }
+dirs = "6.0"
+futures-util = "0.3"
+gio = "0.20"
+glib = "0.20"
+gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
+indexmap = { version = "2.7", features = ["serde"] }
+ksni = { version = "0.3", features = ["blocking"] }
+open = "5.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tokio = "1.52"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = "5.3"
+
+[features]
+default = ["portal-shortcuts", "tray"]
+portal-shortcuts = []
+tray = []
