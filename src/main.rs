@@ -1,6 +1,5 @@
 mod app;
 mod config;
-mod desktop_entry;
 mod i18n;
 mod ipc;
 mod plugin;
@@ -10,8 +9,9 @@ mod tray;
 mod ui;
 
 use app::GpotlightApp;
-use desktop_entry::APP_ID;
 use gtk::prelude::*;
+
+const APP_ID: &str = "io.github.gpotlight.Gpotlight";
 
 fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("toggle") {

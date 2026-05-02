@@ -1,6 +1,7 @@
 use crate::config::{ConfigStore, PluginConfig};
 use crate::i18n::I18n;
 use crate::plugin::SharedRegistry;
+use crate::shortcut::GlobalShortcutManager;
 use crate::theme;
 use crate::ui::SpotlightWindow;
 use gtk::prelude::*;
@@ -18,6 +19,7 @@ impl SettingsWindow {
         config: Rc<RefCell<ConfigStore>>,
         plugins: SharedRegistry,
         spotlight: Rc<SpotlightWindow>,
+        shortcut_manager: Rc<GlobalShortcutManager>,
     ) -> Self {
         let window = gtk::ApplicationWindow::builder()
             .application(app)
@@ -35,7 +37,8 @@ impl SettingsWindow {
         root.set_margin_end(24);
 
         let shortcut_label = section_title(&i18n.t("shortcut"));
-        let shortcut = shortcut_capture_button(config.clone(), i18n.clone());
+        let shortcut =
+            shortcut_capture_button(config.clone(), i18n.clone(), shortcut_manager.clone());
 
         let window_label = section_title(&i18n.t("window_position"));
         let offset = gtk::SpinButton::with_range(24.0, 240.0, 4.0);
@@ -156,7 +159,11 @@ fn section_title(text: &str) -> gtk::Label {
     label
 }
 
-fn shortcut_capture_button(config: Rc<RefCell<ConfigStore>>, i18n: Rc<I18n>) -> gtk::Button {
+fn shortcut_capture_button(
+    config: Rc<RefCell<ConfigStore>>,
+    i18n: Rc<I18n>,
+    shortcut_manager: Rc<GlobalShortcutManager>,
+) -> gtk::Button {
     let button = gtk::Button::with_label(&config.borrow().current().shortcut);
     button.set_halign(gtk::Align::Start);
     button.add_css_class("pill");
@@ -190,8 +197,13 @@ fn shortcut_capture_button(config: Rc<RefCell<ConfigStore>>, i18n: Rc<I18n>) -> 
 
             if let Some(shortcut) = accelerator_from_key(key, modifiers) {
                 button.set_label(&shortcut);
-                if let Err(err) = config.borrow_mut().update(|cfg| cfg.shortcut = shortcut) {
+                if let Err(err) = config
+                    .borrow_mut()
+                    .update(|cfg| cfg.shortcut = shortcut.clone())
+                {
                     tracing::warn!(error = ?err, "failed to save shortcut");
+                } else {
+                    shortcut_manager.rebind(shortcut);
                 }
                 *capturing.borrow_mut() = false;
                 return glib::Propagation::Stop;

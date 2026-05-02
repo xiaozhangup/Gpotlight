@@ -37,14 +37,24 @@ Toggle a running instance without starting a new UI:
 gpotlight toggle
 ```
 
-For GNOME portal permissions, install the desktop entry after copying the binary
-to a directory on your `PATH`:
+For GNOME portal permissions when running a debug build manually, install the
+desktop entry after copying the binary to a directory on your `PATH`:
 
 ```sh
 install -Dm755 target/debug/gpotlight ~/.local/bin/gpotlight
 install -Dm644 data/io.github.gpotlight.Gpotlight.desktop ~/.local/share/applications/io.github.gpotlight.Gpotlight.desktop
 update-desktop-database ~/.local/share/applications
 ```
+
+## RPM
+
+Build a Fedora RPM:
+
+```sh
+./scripts/build-rpm.sh
+```
+
+The package is written under `target/rpmbuild/RPMS/`.
 
 ## Plugin Manifests
 

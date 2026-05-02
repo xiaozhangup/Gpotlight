@@ -1,9 +1,8 @@
 use crate::config::ConfigStore;
-use crate::desktop_entry;
 use crate::i18n::I18n;
 use crate::ipc;
 use crate::plugin::{builtin::register_builtin_plugins, PluginRegistry};
-use crate::shortcut::GlobalShortcut;
+use crate::shortcut::GlobalShortcutManager;
 use crate::tray::Tray;
 use crate::ui::{SettingsWindow, SpotlightWindow};
 use anyhow::Result;
@@ -43,10 +42,6 @@ impl<'a> GpotlightApp<'a> {
     pub fn start(self) -> Result<()> {
         Box::leak(Box::new(RuntimeHold(self.gtk_app.hold())));
 
-        if let Err(err) = desktop_entry::ensure_user_desktop_entry() {
-            tracing::warn!(error = ?err, "failed to install desktop entry for portal app id");
-        }
-
         let spotlight = Rc::new(SpotlightWindow::new(
             self.gtk_app,
             self.i18n.clone(),
@@ -54,12 +49,18 @@ impl<'a> GpotlightApp<'a> {
             self.plugins.clone(),
         ));
 
+        let shortcut_manager = Rc::new(GlobalShortcutManager::spawn(self.config.clone(), {
+            let app = self.gtk_app.clone();
+            move || app.activate_action("toggle", None)
+        }));
+
         let settings = Rc::new(SettingsWindow::new(
             self.gtk_app,
             self.i18n.clone(),
             self.config.clone(),
             self.plugins.clone(),
             spotlight.clone(),
+            shortcut_manager.clone(),
         ));
 
         let toggle_action = gio::SimpleAction::new("toggle", None);
@@ -89,11 +90,6 @@ impl<'a> GpotlightApp<'a> {
         }) {
             tracing::warn!(error = ?err, "failed to start IPC toggle server");
         }
-
-        GlobalShortcut::spawn(self.config.clone(), {
-            let app = self.gtk_app.clone();
-            move || app.activate_action("toggle", None)
-        });
 
         #[cfg(feature = "tray")]
         Tray::spawn(
