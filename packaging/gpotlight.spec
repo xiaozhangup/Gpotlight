@@ -34,10 +34,15 @@ cargo build --release --locked
 cd %{gpotlight_project_dir}
 install -Dm0755 target/release/gpotlight %{buildroot}%{_bindir}/gpotlight
 install -Dm0644 data/io.github.gpotlight.Gpotlight.desktop %{buildroot}%{_datadir}/applications/io.github.gpotlight.Gpotlight.desktop
+install -Dm0644 data/icons/hicolor/scalable/apps/io.github.gpotlight.Gpotlight.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.gpotlight.Gpotlight.svg
+install -dm0755 %{buildroot}%{_datadir}/gpotlight/plugins
+cp -a plugins/. %{buildroot}%{_datadir}/gpotlight/plugins/
 
 %files
 %{_bindir}/gpotlight
 %{_datadir}/applications/io.github.gpotlight.Gpotlight.desktop
+%{_datadir}/icons/hicolor/scalable/apps/io.github.gpotlight.Gpotlight.svg
+%{_datadir}/gpotlight/plugins
 
 %changelog
 * Sun May 03 2026 Gpotlight Developers <noreply@example.com> - 0.1.0-1

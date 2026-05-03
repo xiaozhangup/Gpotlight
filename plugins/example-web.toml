@@ -1,5 +1,0 @@
-id = "example.web"
-name = "Example Web Plugin"
-description = "Example external plugin manifest. Replace command with your plugin executable."
-command = "gpotlight-example-web"
-args = ["--query", "{query}"]

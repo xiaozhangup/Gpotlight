@@ -66,8 +66,16 @@ struct PluginResult {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum PluginResultAction {
-    OpenUri { uri: String },
-    CopyText { text: String },
+    OpenUri {
+        uri: String,
+    },
+    CopyText {
+        text: String,
+    },
+    LaunchCommand {
+        command: String,
+        args: Option<Vec<String>>,
+    },
     Noop,
 }
 
@@ -84,13 +92,21 @@ pub fn register_manifest_plugins(registry: &mut PluginRegistry) {
 
 struct ExternalCommandPlugin {
     manifest: PluginManifest,
+    manifest_dir: PathBuf,
 }
 
 impl ExternalCommandPlugin {
     fn from_manifest(path: &Path) -> anyhow::Result<Self> {
         let raw = fs::read_to_string(path)?;
         let manifest = toml::from_str(&raw)?;
-        Ok(Self { manifest })
+        let manifest_dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Ok(Self {
+            manifest,
+            manifest_dir,
+        })
     }
 
     fn args_for_query(&self, query: &str) -> Vec<String> {
@@ -101,6 +117,20 @@ impl ExternalCommandPlugin {
             .into_iter()
             .map(|arg| arg.replace("{query}", query))
             .collect()
+    }
+
+    fn command_path(&self) -> PathBuf {
+        let command = PathBuf::from(&self.manifest.command);
+        if command.is_absolute() || self.manifest.command.contains('/') {
+            return command;
+        }
+
+        let bundled = self.manifest_dir.join(&command);
+        if bundled.exists() {
+            bundled
+        } else {
+            command
+        }
     }
 }
 
@@ -191,7 +221,7 @@ impl SearchPlugin for ExternalCommandPlugin {
             return Vec::new();
         }
 
-        let output = match Command::new(&self.manifest.command)
+        let output = match Command::new(self.command_path())
             .args(self.args_for_query(query))
             .env("GPOTLIGHT_PLUGIN_CONFIG", plugin_config_json(config))
             .output()
@@ -226,6 +256,12 @@ impl SearchPlugin for ExternalCommandPlugin {
                 action: match item.action.unwrap_or(PluginResultAction::Noop) {
                     PluginResultAction::OpenUri { uri } => PluginAction::OpenUri(uri),
                     PluginResultAction::CopyText { text } => PluginAction::CopyText(text),
+                    PluginResultAction::LaunchCommand { command, args } => {
+                        PluginAction::LaunchCommand {
+                            command,
+                            args: args.unwrap_or_default(),
+                        }
+                    }
                     PluginResultAction::Noop => PluginAction::Noop,
                 },
             })
@@ -259,6 +295,7 @@ fn plugin_manifest_paths() -> Vec<PathBuf> {
     if let Some(config_dir) = dirs::config_dir() {
         roots.push(config_dir.join("gpotlight").join("plugins"));
     }
+    roots.push(PathBuf::from("/usr/share/gpotlight/plugins"));
     roots.push(PathBuf::from("plugins"));
 
     roots

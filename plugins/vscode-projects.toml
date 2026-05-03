@@ -1,0 +1,19 @@
+id = "bundled.vscode-projects"
+name = "VSCode Projects"
+description = "Search recent VSCode projects and Project Manager entries"
+command = "vscode_projects.py"
+args = ["{query}"]
+
+[[config]]
+key = "recent_enabled"
+title = "Search recent entries"
+description = "Include VSCode recently opened folders, workspaces, and files"
+type = "bool"
+default = true
+
+[[config]]
+key = "project_manager_enabled"
+title = "Search Project Manager"
+description = "Include entries from the VSCode Project Manager extension"
+type = "bool"
+default = true

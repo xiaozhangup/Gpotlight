@@ -74,6 +74,7 @@ The package is written under `target/rpmbuild/RPMS/`.
 External plugins can be placed in either:
 
 - `plugins/*.toml` during development
+- `/usr/share/gpotlight/plugins/*.toml` for package-installed plugins
 - `$XDG_CONFIG_HOME/gpotlight/plugins/*.toml` for user-installed plugins
 
 Each plugin is a command that receives the query and prints JSON lines:

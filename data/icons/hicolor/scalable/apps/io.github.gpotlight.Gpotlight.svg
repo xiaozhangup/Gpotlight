@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg height="128px" viewBox="0 0 128 128" width="128px" xmlns="http://www.w3.org/2000/svg">
+    <path d="m 26 40 h 76 c 13.253906 0 24 10.746094 24 24 s -10.746094 24 -24 24 h -76 c -13.253906 0 -24 -10.746094 -24 -24 s 10.746094 -24 24 -24 z m 0 0" fill="#ebebeb"/>
+    <g fill="#9ca3af">
+        <path d="m 23 64 c 0 1.65625 -1.34375 3 -3 3 s -3 -1.34375 -3 -3 s 1.34375 -3 3 -3 s 3 1.34375 3 3 z m 0 0"/>
+        <path d="m 35 64 c 0 1.65625 -1.34375 3 -3 3 s -3 -1.34375 -3 -3 s 1.34375 -3 3 -3 s 3 1.34375 3 3 z m 0 0"/>
+        <path d="m 47 64 c 0 1.65625 -1.34375 3 -3 3 s -3 -1.34375 -3 -3 s 1.34375 -3 3 -3 s 3 1.34375 3 3 z m 0 0"/>
+    </g>
+    <path d="m 77 52 c 0.550781 0 1 0.449219 1 1 v 22 c 0 0.550781 -0.449219 1 -1 1 s -1 -0.449219 -1 -1 v -22 c 0 -0.550781 0.449219 -1 1 -1 z m 0 0" fill="#c7c7c7"/>
+    <path d="m 122 64 c 0 11.046875 -8.953125 20 -20 20 s -20 -8.953125 -20 -20 s 8.953125 -20 20 -20 s 20 8.953125 20 20 z m 0 0" fill="#3584e4"/>
+    <path d="m 107 62 c 0 3.867188 -3.132812 7 -7 7 s -7 -3.132812 -7 -7 s 3.132812 -7 7 -7 s 7 3.132812 7 7 z m 0 0" fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+    <path d="m 105 67 l 6 6" fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+</svg>

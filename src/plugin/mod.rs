@@ -5,6 +5,7 @@ use crate::config::{AppConfig, ConfigStore, PluginConfig};
 use gio::prelude::*;
 use gtk::prelude::*;
 use std::cell::RefCell;
+use std::process::Command;
 use std::rc::Rc;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub enum PluginAction {
     OpenUri(String),
     CopyText(String),
     AppAction(String),
+    LaunchCommand { command: String, args: Vec<String> },
     Noop,
 }
 
@@ -137,6 +139,9 @@ impl SearchResult {
             PluginAction::OpenUri(uri) => format!("uri:{uri}"),
             PluginAction::CopyText(text) => format!("copy:{text}"),
             PluginAction::AppAction(action) => format!("app-action:{action}"),
+            PluginAction::LaunchCommand { command, args } => {
+                format!("command:{}:{}", command, args.join("\u{1f}"))
+            }
             PluginAction::Noop => format!("noop:{}:{}", self.title, self.subtitle),
         }
     }
@@ -169,6 +174,11 @@ pub fn activate_result(result: &SearchResult, window: &gtk::Window) {
         PluginAction::AppAction(action) => {
             if let Some(app) = window.application() {
                 app.activate_action(action, None);
+            }
+        }
+        PluginAction::LaunchCommand { command, args } => {
+            if let Err(err) = Command::new("setsid").arg(command).args(args).spawn() {
+                tracing::warn!(error = ?err, command, args = ?args, "failed to launch command");
             }
         }
         PluginAction::Noop => {}

@@ -1,0 +1,12 @@
+id = "bundled.jetbrains-projects"
+name = "JetBrains Projects"
+description = "Search recent projects from installed JetBrains IDEs"
+command = "jetbrains_projects.py"
+args = ["{query}"]
+
+[[config]]
+key = "match_path"
+title = "Match project path"
+description = "Allow triggered searches to match the full project path"
+type = "bool"
+default = false
