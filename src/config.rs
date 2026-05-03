@@ -136,7 +136,7 @@ impl ConfigStore {
         }
 
         if plugin.show_in_global_search {
-            return Some(query);
+            return (!query.trim().is_empty()).then_some(query);
         }
 
         let prefix = plugin.trigger_prefix.trim();
@@ -183,4 +183,51 @@ impl Default for PluginConfig {
 fn config_path() -> Result<PathBuf> {
     let base = dirs::config_dir().context("XDG config directory is unavailable")?;
     Ok(base.join("gpotlight").join("config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store_with_plugin(id: &str, plugin: PluginConfig) -> ConfigStore {
+        let mut config = AppConfig::default();
+        config.plugins.insert(id.to_string(), plugin);
+        ConfigStore {
+            path: PathBuf::new(),
+            config,
+        }
+    }
+
+    #[test]
+    fn global_plugin_ignores_empty_queries() {
+        let store = store_with_plugin(
+            "test",
+            PluginConfig {
+                show_in_global_search: true,
+                ..PluginConfig::default()
+            },
+        );
+
+        assert_eq!(store.plugin_query("test", ""), None);
+        assert_eq!(store.plugin_query("test", "   "), None);
+        assert_eq!(store.plugin_query("test", "abc"), Some("abc"));
+    }
+
+    #[test]
+    fn prefixed_plugin_allows_empty_query_after_prefix() {
+        let store = store_with_plugin(
+            "test",
+            PluginConfig {
+                show_in_global_search: false,
+                trigger_prefix: "/".to_string(),
+                ..PluginConfig::default()
+            },
+        );
+
+        assert_eq!(store.plugin_query("test", ""), None);
+        assert_eq!(store.plugin_query("test", "abc"), None);
+        assert_eq!(store.plugin_query("test", "/"), Some(""));
+        assert_eq!(store.plugin_query("test", "/abc"), Some("abc"));
+        assert_eq!(store.plugin_query("test", "/ abc"), Some("abc"));
+    }
 }
