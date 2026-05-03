@@ -27,7 +27,7 @@ impl SettingsWindow {
             .application(app)
             .title(i18n.t("settings"))
             .default_width(560)
-            .default_height(480)
+            .default_height(460)
             .build();
         window.set_hide_on_close(true);
         window.set_resizable(true);
@@ -42,23 +42,21 @@ impl SettingsWindow {
             .build();
         toolbar.add_top_bar(&header);
 
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        root.set_margin_top(24);
-        root.set_margin_bottom(24);
-        root.set_margin_start(24);
-        root.set_margin_end(24);
-        root.set_hexpand(true);
+        let page = adw::PreferencesPage::new();
 
-        let shortcut_label = section_title(&i18n.t("shortcut"));
-        let shortcut_enabled = gtk::Switch::new();
-        shortcut_enabled.set_active(config.borrow().current().shortcuts_enabled);
-        shortcut_enabled.set_halign(gtk::Align::Start);
-        shortcut_enabled.set_valign(gtk::Align::Center);
+        let shortcut_group = adw::PreferencesGroup::builder()
+            .title(i18n.t("shortcut"))
+            .build();
+
+        let shortcut_enabled = adw::SwitchRow::builder()
+            .title(i18n.t("enable_shortcut"))
+            .active(config.borrow().current().shortcuts_enabled)
+            .build();
         {
             let config = config.clone();
             let shortcut_manager = shortcut_manager.clone();
-            shortcut_enabled.connect_active_notify(move |switch| {
-                let enabled = switch.is_active();
+            shortcut_enabled.connect_active_notify(move |row| {
+                let enabled = row.is_active();
                 let shortcut = config.borrow().current().shortcut.clone();
                 if let Err(err) = config
                     .borrow_mut()
@@ -70,18 +68,37 @@ impl SettingsWindow {
                 }
             });
         }
-        let shortcut =
-            shortcut_capture_button(config.clone(), i18n.clone(), shortcut_manager.clone());
+        shortcut_group.add(&shortcut_enabled);
 
-        let tray_enabled = gtk::Switch::new();
-        tray_enabled.set_active(config.borrow().current().tray_enabled);
-        tray_enabled.set_halign(gtk::Align::Start);
-        tray_enabled.set_valign(gtk::Align::Center);
+        let shortcut_config = adw::ActionRow::builder()
+            .title(i18n.t("configure_shortcut"))
+            .activatable(true)
+            .build();
+        let configure_button = gtk::Button::with_label(&i18n.t("configure"));
+        configure_button.set_valign(gtk::Align::Center);
+        configure_button.add_css_class("pill");
+        shortcut_config.add_suffix(&configure_button);
+        shortcut_config.set_activatable_widget(Some(&configure_button));
+        {
+            let config = config.clone();
+            let shortcut_manager = shortcut_manager.clone();
+            configure_button.connect_clicked(move |_| {
+                let shortcut = config.borrow().current().shortcut.clone();
+                shortcut_manager.configure(shortcut, None);
+                open_keyboard_settings();
+            });
+        }
+        shortcut_group.add(&shortcut_config);
+
+        let tray_enabled = adw::SwitchRow::builder()
+            .title(i18n.t("enable_tray"))
+            .active(config.borrow().current().tray_enabled)
+            .build();
         {
             let config = config.clone();
             let tray_manager = tray_manager.clone();
-            tray_enabled.connect_active_notify(move |switch| {
-                let enabled = switch.is_active();
+            tray_enabled.connect_active_notify(move |row| {
+                let enabled = row.is_active();
                 if let Err(err) = config.borrow_mut().update(|cfg| cfg.tray_enabled = enabled) {
                     tracing::warn!(error = ?err, "failed to save tray enabled state");
                 } else {
@@ -89,8 +106,13 @@ impl SettingsWindow {
                 }
             });
         }
+        shortcut_group.add(&tray_enabled);
+        page.add(&shortcut_group);
 
-        let window_label = section_title(&i18n.t("window_position"));
+        let window_group = adw::PreferencesGroup::builder()
+            .title(i18n.t("window_position"))
+            .build();
+
         let offset = gtk::SpinButton::with_range(24.0, 240.0, 4.0);
         offset.set_value(config.borrow().current().window.panel_offset_y as f64);
         {
@@ -107,6 +129,7 @@ impl SettingsWindow {
                 spotlight.apply_window_config();
             });
         }
+        window_group.add(&spin_row("Y offset", &offset));
 
         let width = gtk::SpinButton::with_range(480.0, 920.0, 8.0);
         width.set_value(config.borrow().current().window.panel_width as f64);
@@ -124,6 +147,7 @@ impl SettingsWindow {
                 spotlight.apply_window_config();
             });
         }
+        window_group.add(&spin_row("Panel width", &width));
 
         let max_results = gtk::SpinButton::with_range(1.0, 20.0, 1.0);
         max_results.set_value(config.borrow().current().window.max_visible_results as f64);
@@ -141,31 +165,23 @@ impl SettingsWindow {
                 spotlight.apply_window_config();
             });
         }
+        window_group.add(&spin_row(&i18n.t("max_visible_results"), &max_results));
+        page.add(&window_group);
 
-        let plugins_label = section_title(&i18n.t("plugins"));
-        let plugins_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let plugins_group = adw::PreferencesGroup::builder()
+            .title(i18n.t("plugins"))
+            .build();
         for plugin in plugins.borrow().plugin_metadata() {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-            row.set_valign(gtk::Align::Center);
-            let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            labels.set_hexpand(true);
-            let name = gtk::Label::new(Some(&plugin.name));
-            name.set_halign(gtk::Align::Start);
-            name.add_css_class("heading");
-            let description = gtk::Label::new(Some(&plugin.description));
-            description.set_halign(gtk::Align::Start);
-            description.set_wrap(true);
-            description.add_css_class("dim-label");
-
-            let toggle = gtk::Switch::new();
-            toggle.set_active(config.borrow().plugin_enabled(&plugin.id));
-            toggle.set_halign(gtk::Align::End);
-            toggle.set_valign(gtk::Align::Center);
+            let row = adw::SwitchRow::builder()
+                .title(plugin.name)
+                .subtitle(plugin.description)
+                .active(config.borrow().plugin_enabled(&plugin.id))
+                .build();
             {
                 let config = config.clone();
                 let id = plugin.id.clone();
-                toggle.connect_active_notify(move |switch| {
-                    let enabled = switch.is_active();
+                row.connect_active_notify(move |row| {
+                    let enabled = row.is_active();
                     if let Err(err) = config.borrow_mut().update(|cfg| {
                         cfg.plugins.insert(id.clone(), PluginConfig { enabled });
                     }) {
@@ -173,38 +189,11 @@ impl SettingsWindow {
                     }
                 });
             }
-
-            labels.append(&name);
-            labels.append(&description);
-            row.append(&labels);
-            row.append(&toggle);
-            plugins_box.append(&row);
+            plugins_group.add(&row);
         }
+        page.add(&plugins_group);
 
-        root.append(&shortcut_label);
-        root.append(&gtk::Label::new(Some(&i18n.t("enable_shortcut"))));
-        root.append(&shortcut_enabled);
-        root.append(&shortcut);
-        root.append(&gtk::Label::new(Some(&i18n.t("enable_tray"))));
-        root.append(&tray_enabled);
-        root.append(&window_label);
-        root.append(&gtk::Label::new(Some("Y offset")));
-        root.append(&offset);
-        root.append(&gtk::Label::new(Some("Panel width")));
-        root.append(&width);
-        root.append(&gtk::Label::new(Some(&i18n.t("max_visible_results"))));
-        root.append(&max_results);
-        root.append(&plugins_label);
-        root.append(&plugins_box);
-
-        let scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&root)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        toolbar.set_content(Some(&scrolled));
+        toolbar.set_content(Some(&page));
         window.set_content(Some(&toolbar));
 
         Self { window }
@@ -215,116 +204,20 @@ impl SettingsWindow {
     }
 }
 
-fn section_title(text: &str) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.set_halign(gtk::Align::Start);
-    label.add_css_class("title-3");
-    label
+fn spin_row(title: &str, spin: &gtk::SpinButton) -> adw::ActionRow {
+    spin.set_valign(gtk::Align::Center);
+    spin.set_width_chars(6);
+
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(spin);
+    row
 }
 
-fn shortcut_capture_button(
-    config: Rc<RefCell<ConfigStore>>,
-    i18n: Rc<I18n>,
-    shortcut_manager: Rc<GlobalShortcutManager>,
-) -> gtk::Button {
-    let button = gtk::Button::with_label(&config.borrow().current().shortcut);
-    button.set_halign(gtk::Align::Start);
-    button.add_css_class("pill");
-
-    let capturing = Rc::new(RefCell::new(false));
+fn open_keyboard_settings() {
+    if let Err(err) = std::process::Command::new("gnome-control-center")
+        .arg("keyboard")
+        .spawn()
     {
-        let capturing = capturing.clone();
-        let config = config.clone();
-        let i18n = i18n.clone();
-        let shortcut_manager = shortcut_manager.clone();
-        button.connect_clicked(move |button| {
-            *capturing.borrow_mut() = true;
-            button.set_label(&i18n.t("press_shortcut"));
-            button.grab_focus();
-
-            let shortcut = config.borrow().current().shortcut.clone();
-            shortcut_manager.set_enabled(false, shortcut);
-        });
+        tracing::warn!(error = ?err, "failed to open GNOME keyboard settings");
     }
-
-    let key = gtk::EventControllerKey::new();
-    {
-        let button = button.clone();
-        let config = config.clone();
-        let capturing = capturing.clone();
-        let shortcut_manager = shortcut_manager.clone();
-        key.connect_key_pressed(move |_, key, _, modifiers| {
-            if !*capturing.borrow() {
-                return glib::Propagation::Proceed;
-            }
-
-            if key == gtk::gdk::Key::Escape {
-                *capturing.borrow_mut() = false;
-                let current = config.borrow().current().clone();
-                button.set_label(&current.shortcut);
-                shortcut_manager.set_enabled(current.shortcuts_enabled, current.shortcut);
-                return glib::Propagation::Stop;
-            }
-
-            if let Some(shortcut) = accelerator_from_key(key, modifiers) {
-                button.set_label(&shortcut);
-                if let Err(err) = config
-                    .borrow_mut()
-                    .update(|cfg| cfg.shortcut = shortcut.clone())
-                {
-                    tracing::warn!(error = ?err, "failed to save shortcut");
-                } else {
-                    let enabled = config.borrow().current().shortcuts_enabled;
-                    shortcut_manager.set_enabled(enabled, shortcut);
-                }
-                *capturing.borrow_mut() = false;
-                return glib::Propagation::Stop;
-            }
-
-            glib::Propagation::Stop
-        });
-    }
-    button.add_controller(key);
-
-    button
-}
-
-fn accelerator_from_key(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> Option<String> {
-    if is_modifier_key(key) {
-        return None;
-    }
-
-    let mut parts = Vec::new();
-    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-        parts.push("CTRL".to_string());
-    }
-    if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) {
-        parts.push("ALT".to_string());
-    }
-    if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
-        parts.push("SHIFT".to_string());
-    }
-    if modifiers.contains(gtk::gdk::ModifierType::SUPER_MASK) {
-        parts.push("LOGO".to_string());
-    }
-
-    let key_name = key.name()?;
-    parts.push(key_name.to_string());
-    Some(parts.join("+"))
-}
-
-fn is_modifier_key(key: gtk::gdk::Key) -> bool {
-    matches!(
-        key,
-        gtk::gdk::Key::Shift_L
-            | gtk::gdk::Key::Shift_R
-            | gtk::gdk::Key::Control_L
-            | gtk::gdk::Key::Control_R
-            | gtk::gdk::Key::Alt_L
-            | gtk::gdk::Key::Alt_R
-            | gtk::gdk::Key::Super_L
-            | gtk::gdk::Key::Super_R
-            | gtk::gdk::Key::Meta_L
-            | gtk::gdk::Key::Meta_R
-    )
 }
