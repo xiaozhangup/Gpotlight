@@ -1,9 +1,9 @@
 mod app;
+mod autostart;
 mod config;
 mod i18n;
 mod ipc;
 mod plugin;
-mod shortcut;
 mod theme;
 mod tray;
 mod ui;
@@ -21,6 +21,10 @@ fn main() -> glib::ExitCode {
 
     if std::env::args().nth(1).as_deref() == Some("settings") {
         ipc::send_settings_if_running();
+        return glib::ExitCode::SUCCESS;
+    }
+
+    if ipc::is_running() {
         return glib::ExitCode::SUCCESS;
     }
 

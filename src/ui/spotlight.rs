@@ -245,15 +245,19 @@ impl SpotlightWindow {
 
                 *selected_index.borrow_mut() = next_selected;
                 *result_offset.borrow_mut() = next_offset;
-                render_results(
-                    &list,
-                    &results_view,
-                    &scroll_indicator,
-                    &results_ref,
-                    next_offset,
-                    next_selected,
-                    config.borrow().current().window.max_visible_results,
-                );
+                if next_offset == current_offset {
+                    update_selection(&list, current_offset, next_selected);
+                } else {
+                    render_results(
+                        &list,
+                        &results_view,
+                        &scroll_indicator,
+                        &results_ref,
+                        next_offset,
+                        next_selected,
+                        config.borrow().current().window.max_visible_results,
+                    );
+                }
             }
             glib::Propagation::Stop
         });
@@ -297,15 +301,19 @@ impl SpotlightWindow {
 
                 *selected_index.borrow_mut() = next_selected;
                 *result_offset.borrow_mut() = next_offset;
-                render_results(
-                    &list,
-                    &results_view,
-                    &scroll_indicator,
-                    &results_ref,
-                    next_offset,
-                    next_selected,
-                    config.borrow().current().window.max_visible_results,
-                );
+                if next_offset == current_offset {
+                    update_selection(&list, current_offset, next_selected);
+                } else {
+                    render_results(
+                        &list,
+                        &results_view,
+                        &scroll_indicator,
+                        &results_ref,
+                        next_offset,
+                        next_selected,
+                        config.borrow().current().window.max_visible_results,
+                    );
+                }
                 return glib::Propagation::Stop;
             }
 

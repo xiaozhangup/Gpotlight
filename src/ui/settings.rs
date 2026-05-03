@@ -1,7 +1,7 @@
+use crate::autostart;
 use crate::config::{ConfigStore, PluginConfig};
 use crate::i18n::I18n;
 use crate::plugin::SharedRegistry;
-use crate::shortcut::GlobalShortcutManager;
 use crate::theme;
 use crate::tray::TrayManager;
 use crate::ui::SpotlightWindow;
@@ -20,7 +20,6 @@ impl SettingsWindow {
         config: Rc<RefCell<ConfigStore>>,
         plugins: SharedRegistry,
         spotlight: Rc<SpotlightWindow>,
-        shortcut_manager: Rc<GlobalShortcutManager>,
         tray_manager: Rc<TrayManager>,
     ) -> Self {
         let window = adw::ApplicationWindow::builder()
@@ -48,30 +47,9 @@ impl SettingsWindow {
             .title(i18n.t("shortcut"))
             .build();
 
-        let shortcut_enabled = adw::SwitchRow::builder()
-            .title(i18n.t("enable_shortcut"))
-            .active(config.borrow().current().shortcuts_enabled)
-            .build();
-        {
-            let config = config.clone();
-            let shortcut_manager = shortcut_manager.clone();
-            shortcut_enabled.connect_active_notify(move |row| {
-                let enabled = row.is_active();
-                let shortcut = config.borrow().current().shortcut.clone();
-                if let Err(err) = config
-                    .borrow_mut()
-                    .update(|cfg| cfg.shortcuts_enabled = enabled)
-                {
-                    tracing::warn!(error = ?err, "failed to save shortcut enabled state");
-                } else {
-                    shortcut_manager.set_enabled(enabled, shortcut);
-                }
-            });
-        }
-        shortcut_group.add(&shortcut_enabled);
-
         let shortcut_config = adw::ActionRow::builder()
             .title(i18n.t("configure_shortcut"))
+            .subtitle(i18n.t("shortcut_command_hint"))
             .activatable(true)
             .build();
         let configure_button = gtk::Button::with_label(&i18n.t("configure"));
@@ -79,15 +57,7 @@ impl SettingsWindow {
         configure_button.add_css_class("pill");
         shortcut_config.add_suffix(&configure_button);
         shortcut_config.set_activatable_widget(Some(&configure_button));
-        {
-            let config = config.clone();
-            let shortcut_manager = shortcut_manager.clone();
-            configure_button.connect_clicked(move |_| {
-                let shortcut = config.borrow().current().shortcut.clone();
-                shortcut_manager.configure(shortcut, None);
-                open_keyboard_settings();
-            });
-        }
+        configure_button.connect_clicked(move |_| open_keyboard_settings());
         shortcut_group.add(&shortcut_config);
 
         let tray_enabled = adw::SwitchRow::builder()
@@ -107,6 +77,19 @@ impl SettingsWindow {
             });
         }
         shortcut_group.add(&tray_enabled);
+
+        let autostart_enabled = adw::SwitchRow::builder()
+            .title(i18n.t("enable_autostart"))
+            .active(autostart::is_enabled())
+            .build();
+        autostart_enabled.connect_active_notify(move |row| {
+            let enabled = row.is_active();
+            if let Err(err) = autostart::set_enabled(enabled) {
+                tracing::warn!(error = ?err, enabled, "failed to update autostart state");
+            }
+        });
+        shortcut_group.add(&autostart_enabled);
+
         page.add(&shortcut_group);
 
         let window_group = adw::PreferencesGroup::builder()
@@ -214,7 +197,8 @@ fn spin_row(title: &str, spin: &gtk::SpinButton) -> adw::ActionRow {
 }
 
 fn open_keyboard_settings() {
-    if let Err(err) = std::process::Command::new("gnome-control-center")
+    if let Err(err) = std::process::Command::new("setsid")
+        .arg("gnome-control-center")
         .arg("keyboard")
         .spawn()
     {

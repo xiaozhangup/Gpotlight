@@ -18,6 +18,14 @@ pub fn send_settings_if_running() {
     send_command_if_running(COMMAND_SETTINGS);
 }
 
+pub fn is_running() -> bool {
+    let Ok(path) = socket_path() else {
+        return false;
+    };
+
+    UnixStream::connect(path).is_ok()
+}
+
 fn send_command_if_running(command: &[u8]) {
     let Ok(path) = socket_path() else {
         return;

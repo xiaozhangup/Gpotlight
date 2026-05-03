@@ -2,7 +2,6 @@ use crate::config::ConfigStore;
 use crate::i18n::I18n;
 use crate::ipc;
 use crate::plugin::{builtin::register_builtin_plugins, PluginRegistry};
-use crate::shortcut::GlobalShortcutManager;
 use crate::tray::TrayManager;
 use crate::ui::{SettingsWindow, SpotlightWindow};
 use adw::prelude::*;
@@ -49,11 +48,6 @@ impl<'a> GpotlightApp<'a> {
             self.plugins.clone(),
         ));
 
-        let shortcut_manager = Rc::new(GlobalShortcutManager::spawn(self.config.clone(), {
-            let app = self.gtk_app.clone();
-            move || app.activate_action("toggle", None)
-        }));
-
         let toggle_action = gio::SimpleAction::new("toggle", None);
         {
             let spotlight = spotlight.clone();
@@ -90,7 +84,6 @@ impl<'a> GpotlightApp<'a> {
             self.config.clone(),
             self.plugins.clone(),
             spotlight.clone(),
-            shortcut_manager.clone(),
             tray_manager.clone(),
         ));
 

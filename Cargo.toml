@@ -8,9 +8,7 @@ description = "A GNOME Wayland Spotlight-style launcher written with Rust and GT
 [dependencies]
 anyhow = "1.0"
 adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
-ashpd = { version = "0.13", features = ["global_shortcuts"] }
 dirs = "6.0"
-futures-util = "0.3"
 gio = "0.22"
 glib = "0.22"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
@@ -20,10 +18,8 @@ open = "5.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-tokio = "1.52"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-zbus = "5.3"
 
 [features]
 default = ["portal-shortcuts", "tray"]

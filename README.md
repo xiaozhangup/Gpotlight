@@ -23,7 +23,6 @@ Runtime dependencies expected on GNOME:
 
 - GTK 4
 - libadwaita
-- xdg-desktop-portal with GlobalShortcuts support
 - A StatusNotifierItem/AppIndicator shell extension if your GNOME session does not show tray icons by default
 
 ## Run
@@ -33,6 +32,13 @@ cargo run
 ```
 
 Toggle a running instance without starting a new UI:
+
+```sh
+gpotlight toggle
+```
+
+To use a global keyboard shortcut, create a custom shortcut in GNOME Settings
+and set its command to:
 
 ```sh
 gpotlight toggle
