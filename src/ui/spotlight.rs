@@ -161,6 +161,7 @@ impl SpotlightWindow {
             *self.result_offset.borrow(),
             *self.selected_index.borrow(),
             cfg.max_visible_results,
+            cfg.panel_width,
         );
     }
 
@@ -186,6 +187,7 @@ impl SpotlightWindow {
                 0,
                 0,
                 config.borrow().current().window.max_visible_results,
+                config.borrow().current().window.panel_width,
             );
             *results.borrow_mut() = found;
         });
@@ -258,6 +260,7 @@ impl SpotlightWindow {
                         next_offset,
                         next_selected,
                         config.borrow().current().window.max_visible_results,
+                        config.borrow().current().window.panel_width,
                     );
                 }
             }
@@ -314,6 +317,7 @@ impl SpotlightWindow {
                         next_offset,
                         next_selected,
                         config.borrow().current().window.max_visible_results,
+                        config.borrow().current().window.panel_width,
                     );
                 }
                 return glib::Propagation::Stop;
@@ -386,20 +390,26 @@ fn render_results(
     offset: usize,
     selected_index: usize,
     max_visible_results: i32,
+    panel_width: i32,
 ) {
     while let Some(row) = list.first_child() {
         list.remove(&row);
     }
 
     let visible_count = visible_result_count(results.len(), max_visible_results);
+    let max_text_width_chars = result_text_max_width_chars(panel_width);
     for result in results.iter().skip(offset).take(visible_count) {
-        list.append(&result_row(result));
+        list.append(&result_row(result, max_text_width_chars));
     }
     let has_results = visible_count > 0;
     list.set_visible(has_results);
     results_view.set_visible(has_results);
     update_selection(list, offset, selected_index);
     update_scroll_indicator(scroll_indicator, results.len(), visible_count);
+}
+
+fn result_text_max_width_chars(panel_width: i32) -> i32 {
+    ((panel_width - 120) / 8).clamp(12, 96)
 }
 
 fn visible_result_count(result_count: usize, max_visible_results: i32) -> usize {
@@ -514,7 +524,7 @@ fn rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, width: f64, height: f6
     cr.close_path();
 }
 
-fn result_row(result: &SearchResult) -> gtk::ListBoxRow {
+fn result_row(result: &SearchResult, max_text_width_chars: i32) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_hexpand(true);
     row.set_height_request(50);
@@ -528,9 +538,12 @@ fn result_row(result: &SearchResult) -> gtk::ListBoxRow {
 
     let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
     labels.set_hexpand(true);
+    labels.set_width_request(1);
     let title = gtk::Label::new(Some(&result.title));
     title.set_halign(gtk::Align::Start);
     title.set_hexpand(true);
+    title.set_width_chars(1);
+    title.set_max_width_chars(max_text_width_chars);
     title.set_single_line_mode(true);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.add_css_class("result-title");
@@ -543,6 +556,8 @@ fn result_row(result: &SearchResult) -> gtk::ListBoxRow {
     let subtitle = gtk::Label::new(Some(subtitle_text));
     subtitle.set_halign(gtk::Align::Start);
     subtitle.set_hexpand(true);
+    subtitle.set_width_chars(1);
+    subtitle.set_max_width_chars(max_text_width_chars);
     subtitle.set_single_line_mode(true);
     subtitle.add_css_class("result-subtitle");
     subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
