@@ -217,10 +217,6 @@ impl SearchPlugin for ExternalCommandPlugin {
         _app_config: &AppConfig,
     ) -> Vec<SearchResult> {
         let query = query.trim();
-        if query.is_empty() {
-            return Vec::new();
-        }
-
         let output = match Command::new(self.command_path())
             .args(self.args_for_query(query))
             .env("GPOTLIGHT_PLUGIN_CONFIG", plugin_config_json(config))

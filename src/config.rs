@@ -144,10 +144,7 @@ impl ConfigStore {
             return None;
         }
 
-        query
-            .strip_prefix(prefix)
-            .map(str::trim_start)
-            .filter(|query| !query.is_empty())
+        query.strip_prefix(prefix).map(str::trim_start)
     }
 
     pub fn usage_count(&self, key: &str) -> u32 {

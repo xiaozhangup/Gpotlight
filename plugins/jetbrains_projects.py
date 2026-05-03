@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,12 +27,21 @@ class Ide:
 
 
 @dataclass
+class Launcher:
+    command: str
+    args: list[str]
+    icon: str
+
+
+@dataclass
 class Project:
     name: str
     path: str
     last_opened: int
     ide_name: str
-    binary: str
+    command: str
+    args: list[str]
+    icon: str
 
 
 IDES = [
@@ -83,12 +93,96 @@ def load_config() -> dict:
 def list_projects() -> list[Project]:
     projects = []
     for ide in IDES:
-        binary = ide.binary
-        if not binary:
-            continue
+        launcher = ide_launcher(ide)
         for config_dir in ide_config_dirs(ide):
-            projects.extend(parse_recent_projects(ide, binary, config_dir))
+            projects.extend(parse_recent_projects(ide, launcher, config_dir))
     return projects
+
+
+def ide_launcher(ide: Ide) -> Launcher:
+    desktop_launcher = launcher_from_desktop_file(ide)
+    if desktop_launcher:
+        return desktop_launcher
+
+    for binary in ide.binaries:
+        script = Path.home() / ".local/share/JetBrains/Toolbox/scripts" / binary
+        if script.exists():
+            return Launcher(str(script), [], default_icon(ide))
+
+    binary = ide.binary
+    if binary:
+        return Launcher(binary, [], default_icon(ide))
+
+    return Launcher(ide.binaries[0], [], default_icon(ide))
+
+
+def launcher_from_desktop_file(ide: Ide) -> Launcher | None:
+    for desktop_file in desktop_files():
+        values = read_desktop_entry(desktop_file)
+        exec_value = values.get("Exec", "")
+        if not desktop_matches_ide(ide, values, exec_value):
+            continue
+        command = parse_exec(exec_value)
+        if not command:
+            continue
+        return Launcher(command[0], command[1:], values.get("Icon", default_icon(ide)))
+    return None
+
+
+def desktop_files() -> list[Path]:
+    data_dirs = [Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))]
+    data_dirs.extend(Path(path) for path in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":") if path)
+
+    files = []
+    for base in data_dirs:
+        files.extend((base / "applications").glob("jetbrains-*.desktop"))
+    return sorted(files)
+
+
+def read_desktop_entry(path: Path) -> dict[str, str]:
+    values = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "=" not in line or line.startswith("#"):
+                continue
+            key, value = line.split("=", 1)
+            values[key] = value
+    except OSError:
+        pass
+    return values
+
+
+def desktop_matches_ide(ide: Ide, values: dict[str, str], exec_value: str) -> bool:
+    haystack = " ".join([values.get("Name", ""), values.get("StartupWMClass", ""), exec_value]).lower()
+    if ide.name == "IntelliJ IDEA":
+        return "intellij" in haystack or "idea" in haystack
+    return any(alias.lower().replace(".sh", "") in haystack for alias in ide.binaries)
+
+
+def parse_exec(exec_value: str) -> list[str]:
+    try:
+        parts = shlex.split(exec_value)
+    except ValueError:
+        return []
+    return [part for part in parts if not part.startswith("%")]
+
+
+def default_icon(ide: Ide) -> str:
+    return {
+        "Android Studio": "android-studio",
+        "CLion": "clion",
+        "DataGrip": "datagrip",
+        "DataSpell": "dataspell",
+        "GoLand": "goland",
+        "IntelliJ IDEA": "idea",
+        "PhpStorm": "phpstorm",
+        "PyCharm": "pycharm",
+        "Rider": "rider",
+        "RubyMine": "rubymine",
+        "RustRover": "rustrover",
+        "WebStorm": "webstorm",
+        "Writerside": "writerside",
+    }.get(ide.name, "applications-development-symbolic")
 
 
 def ide_config_dirs(ide: Ide) -> list[Path]:
@@ -99,7 +193,7 @@ def ide_config_dirs(ide: Ide) -> list[Path]:
     return sorted(dirs, reverse=True)[:1]
 
 
-def parse_recent_projects(ide: Ide, binary: str, config_dir: Path) -> list[Project]:
+def parse_recent_projects(ide: Ide, launcher: Launcher, config_dir: Path) -> list[Project]:
     if ide.name == "Rider":
         file_name = "recentSolutions.xml"
         component = "RiderRecentProjectsManager"
@@ -126,7 +220,9 @@ def parse_recent_projects(ide: Ide, binary: str, config_dir: Path) -> list[Proje
                 path=path,
                 last_opened=last_opened,
                 ide_name=ide.name,
-                binary=binary,
+                command=launcher.command,
+                args=launcher.args,
+                icon=launcher.icon,
             )
         )
     return projects
@@ -144,11 +240,11 @@ def result_for_project(project: Project) -> dict:
     return {
         "title": project.name,
         "subtitle": f"{project.ide_name} - {project.path}",
-        "icon": "applications-development-symbolic",
+        "icon": project.icon,
         "action": {
             "type": "launch-command",
-            "command": project.binary,
-            "args": [project.path],
+            "command": project.command,
+            "args": [*project.args, project.path],
         },
     }
 
