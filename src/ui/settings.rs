@@ -1,7 +1,7 @@
 use crate::autostart;
 use crate::config::{ConfigStore, PluginConfig};
 use crate::i18n::I18n;
-use crate::plugin::SharedRegistry;
+use crate::plugin::{PluginConfigItem, PluginConfigKind, SharedRegistry};
 use crate::theme;
 use crate::tray::TrayManager;
 use crate::ui::SpotlightWindow;
@@ -69,7 +69,11 @@ impl SettingsWindow {
             let tray_manager = tray_manager.clone();
             tray_enabled.connect_active_notify(move |row| {
                 let enabled = row.is_active();
-                if let Err(err) = config.borrow_mut().update(|cfg| cfg.tray_enabled = enabled) {
+                let result = {
+                    let mut config = config.borrow_mut();
+                    config.update(|cfg| cfg.tray_enabled = enabled)
+                };
+                if let Err(err) = result {
                     tracing::warn!(error = ?err, "failed to save tray enabled state");
                 } else {
                     tray_manager.set_enabled(enabled);
@@ -91,6 +95,49 @@ impl SettingsWindow {
         shortcut_group.add(&autostart_enabled);
 
         page.add(&shortcut_group);
+
+        let search_group = adw::PreferencesGroup::builder()
+            .title(i18n.t("search_behavior"))
+            .build();
+
+        let usage_ranking_enabled = adw::SwitchRow::builder()
+            .title(i18n.t("enable_usage_ranking"))
+            .subtitle(i18n.t("enable_usage_ranking_hint"))
+            .active(config.borrow().current().usage_ranking_enabled)
+            .build();
+        {
+            let config = config.clone();
+            usage_ranking_enabled.connect_active_notify(move |row| {
+                let enabled = row.is_active();
+                if let Err(err) = config
+                    .borrow_mut()
+                    .update(|cfg| cfg.usage_ranking_enabled = enabled)
+                {
+                    tracing::warn!(error = ?err, "failed to save usage ranking state");
+                }
+            });
+        }
+        search_group.add(&usage_ranking_enabled);
+
+        let pinyin_search_enabled = adw::SwitchRow::builder()
+            .title(i18n.t("enable_pinyin_search"))
+            .subtitle(i18n.t("enable_pinyin_search_hint"))
+            .active(config.borrow().current().pinyin_search_enabled)
+            .build();
+        {
+            let config = config.clone();
+            pinyin_search_enabled.connect_active_notify(move |row| {
+                let enabled = row.is_active();
+                if let Err(err) = config
+                    .borrow_mut()
+                    .update(|cfg| cfg.pinyin_search_enabled = enabled)
+                {
+                    tracing::warn!(error = ?err, "failed to save pinyin search state");
+                }
+            });
+        }
+        search_group.add(&pinyin_search_enabled);
+        page.add(&search_group);
 
         let window_group = adw::PreferencesGroup::builder()
             .title(i18n.t("window_position"))
@@ -155,23 +202,109 @@ impl SettingsWindow {
             .title(i18n.t("plugins"))
             .build();
         for plugin in plugins.borrow().plugin_metadata() {
-            let row = adw::SwitchRow::builder()
-                .title(plugin.name)
-                .subtitle(plugin.description)
-                .active(config.borrow().plugin_enabled(&plugin.id))
+            let plugin_config = config.borrow().plugin_config(&plugin.id);
+            let row = adw::ExpanderRow::builder()
+                .title(plugin.name.clone())
+                .subtitle(plugin_summary(&plugin_config, &plugin.description))
+                .enable_expansion(true)
                 .build();
+
+            let enabled = gtk::Switch::new();
+            enabled.set_active(plugin_config.enabled);
+            enabled.set_valign(gtk::Align::Center);
+            row.add_suffix(&enabled);
             {
                 let config = config.clone();
+                let expander = row.clone();
+                let description = plugin.description.clone();
                 let id = plugin.id.clone();
-                row.connect_active_notify(move |row| {
-                    let enabled = row.is_active();
-                    if let Err(err) = config.borrow_mut().update(|cfg| {
-                        cfg.plugins.insert(id.clone(), PluginConfig { enabled });
-                    }) {
+                enabled.connect_active_notify(move |switch| {
+                    let enabled = switch.is_active();
+                    let result = {
+                        let mut config = config.borrow_mut();
+                        config.update(|cfg| {
+                            let plugin = cfg.plugins.entry(id.clone()).or_default();
+                            plugin.enabled = enabled;
+                        })
+                    };
+                    if let Err(err) = result {
                         tracing::warn!(error = ?err, plugin_id = id, "failed to save plugin state");
+                    } else {
+                        let plugin_config = config.borrow().plugin_config(&id);
+                        expander.set_subtitle(&plugin_summary(&plugin_config, &description));
                     }
                 });
             }
+
+            let global_search = adw::SwitchRow::builder()
+                .title(i18n.t("plugin_global_search"))
+                .active(plugin_config.show_in_global_search)
+                .build();
+            {
+                let config = config.clone();
+                let expander = row.clone();
+                let description = plugin.description.clone();
+                let id = plugin.id.clone();
+                global_search.connect_active_notify(move |row| {
+                    let enabled = row.is_active();
+                    let result = {
+                        let mut config = config.borrow_mut();
+                        config.update(|cfg| {
+                            let plugin = cfg.plugins.entry(id.clone()).or_default();
+                            plugin.show_in_global_search = enabled;
+                        })
+                    };
+                    if let Err(err) = result {
+                        tracing::warn!(error = ?err, plugin_id = id, "failed to save plugin state");
+                    } else {
+                        let plugin_config = config.borrow().plugin_config(&id);
+                        expander.set_subtitle(&plugin_summary(&plugin_config, &description));
+                    }
+                });
+            }
+            row.add_row(&global_search);
+
+            let prefix_entry = gtk::Entry::new();
+            prefix_entry.set_text(&plugin_config.trigger_prefix);
+            prefix_entry.set_width_chars(8);
+            prefix_entry.set_max_width_chars(16);
+            let prefix_row = adw::ActionRow::builder()
+                .title(i18n.t("plugin_trigger_prefix"))
+                .subtitle(i18n.t("plugin_trigger_prefix_hint"))
+                .build();
+            prefix_row.add_suffix(&prefix_entry);
+            {
+                let config = config.clone();
+                let expander = row.clone();
+                let description = plugin.description.clone();
+                let id = plugin.id.clone();
+                prefix_entry.connect_changed(move |entry| {
+                    let prefix = entry.text().to_string();
+                    let result = {
+                        let mut config = config.borrow_mut();
+                        config.update(|cfg| {
+                            let plugin = cfg.plugins.entry(id.clone()).or_default();
+                            plugin.trigger_prefix = prefix.clone();
+                        })
+                    };
+                    if let Err(err) = result {
+                        tracing::warn!(
+                            error = ?err,
+                            plugin_id = id,
+                            "failed to save plugin trigger prefix"
+                        );
+                    } else {
+                        let plugin_config = config.borrow().plugin_config(&id);
+                        expander.set_subtitle(&plugin_summary(&plugin_config, &description));
+                    }
+                });
+            }
+            row.add_row(&prefix_row);
+
+            for item in plugin.config_items {
+                row.add_row(&custom_config_row(&config, &plugin.id, item));
+            }
+
             plugins_group.add(&row);
         }
         page.add(&plugins_group);
@@ -194,6 +327,198 @@ fn spin_row(title: &str, spin: &gtk::SpinButton) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).build();
     row.add_suffix(spin);
     row
+}
+
+fn plugin_summary(config: &PluginConfig, description: &str) -> String {
+    let visibility = if config.show_in_global_search {
+        "Global search".to_string()
+    } else if config.trigger_prefix.trim().is_empty() {
+        "Prefix required".to_string()
+    } else {
+        format!("Prefix: {}", config.trigger_prefix)
+    };
+
+    if description.is_empty() {
+        visibility
+    } else {
+        format!("{description} - {visibility}")
+    }
+}
+
+fn custom_config_row(
+    config: &Rc<RefCell<ConfigStore>>,
+    plugin_id: &str,
+    item: PluginConfigItem,
+) -> gtk::Widget {
+    match item.kind {
+        PluginConfigKind::Bool => {
+            let row = adw::SwitchRow::builder()
+                .title(item.title)
+                .subtitle(item.description)
+                .active(
+                    config
+                        .borrow()
+                        .plugin_config(plugin_id)
+                        .custom
+                        .get(&item.key)
+                        .and_then(toml::Value::as_bool)
+                        .unwrap_or_else(|| item.default_value.as_bool().unwrap_or(false)),
+                )
+                .build();
+            {
+                let config = config.clone();
+                let plugin_id = plugin_id.to_string();
+                let key = item.key;
+                row.connect_active_notify(move |row| {
+                    let value = row.is_active();
+                    if let Err(err) = config.borrow_mut().update(|cfg| {
+                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        plugin
+                            .custom
+                            .insert(key.clone(), toml::Value::Boolean(value));
+                    }) {
+                        tracing::warn!(
+                            error = ?err,
+                            plugin_id,
+                            setting = key,
+                            "failed to save plugin custom setting"
+                        );
+                    }
+                });
+            }
+            row.upcast()
+        }
+        PluginConfigKind::Text => {
+            let entry = gtk::Entry::new();
+            entry.set_text(
+                config
+                    .borrow()
+                    .plugin_config(plugin_id)
+                    .custom
+                    .get(&item.key)
+                    .and_then(toml::Value::as_str)
+                    .or_else(|| item.default_value.as_str())
+                    .unwrap_or_default(),
+            );
+            let row = adw::ActionRow::builder()
+                .title(item.title)
+                .subtitle(item.description)
+                .build();
+            row.add_suffix(&entry);
+            {
+                let config = config.clone();
+                let plugin_id = plugin_id.to_string();
+                let key = item.key;
+                entry.connect_changed(move |entry| {
+                    let value = entry.text().to_string();
+                    if let Err(err) = config.borrow_mut().update(|cfg| {
+                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        plugin
+                            .custom
+                            .insert(key.clone(), toml::Value::String(value.clone()));
+                    }) {
+                        tracing::warn!(
+                            error = ?err,
+                            plugin_id,
+                            setting = key,
+                            "failed to save plugin custom setting"
+                        );
+                    }
+                });
+            }
+            row.upcast()
+        }
+        PluginConfigKind::Choice { options } => {
+            let current_value = config
+                .borrow()
+                .plugin_config(plugin_id)
+                .custom
+                .get(&item.key)
+                .and_then(toml::Value::as_str)
+                .or_else(|| item.default_value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let selected = options
+                .iter()
+                .position(|option| option.value == current_value)
+                .unwrap_or(0);
+            let labels: Vec<&str> = options.iter().map(|option| option.label.as_str()).collect();
+            let dropdown = gtk::DropDown::from_strings(&labels);
+            dropdown.set_selected(selected as u32);
+            dropdown.set_valign(gtk::Align::Center);
+
+            let row = adw::ActionRow::builder()
+                .title(item.title)
+                .subtitle(item.description)
+                .build();
+            row.add_suffix(&dropdown);
+            {
+                let config = config.clone();
+                let plugin_id = plugin_id.to_string();
+                let key = item.key;
+                dropdown.connect_selected_notify(move |dropdown| {
+                    let selected = dropdown.selected() as usize;
+                    let Some(option) = options.get(selected) else {
+                        return;
+                    };
+                    if let Err(err) = config.borrow_mut().update(|cfg| {
+                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        plugin
+                            .custom
+                            .insert(key.clone(), toml::Value::String(option.value.clone()));
+                    }) {
+                        tracing::warn!(
+                            error = ?err,
+                            plugin_id,
+                            setting = key,
+                            "failed to save plugin custom setting"
+                        );
+                    }
+                });
+            }
+            row.upcast()
+        }
+        PluginConfigKind::Integer { min, max, step } => {
+            let spin = gtk::SpinButton::with_range(min as f64, max as f64, step as f64);
+            spin.set_value(
+                config
+                    .borrow()
+                    .plugin_config(plugin_id)
+                    .custom
+                    .get(&item.key)
+                    .and_then(toml::Value::as_integer)
+                    .or_else(|| item.default_value.as_integer())
+                    .unwrap_or(min) as f64,
+            );
+            let row = adw::ActionRow::builder()
+                .title(item.title)
+                .subtitle(item.description)
+                .build();
+            row.add_suffix(&spin);
+            {
+                let config = config.clone();
+                let plugin_id = plugin_id.to_string();
+                let key = item.key;
+                spin.connect_value_changed(move |spin| {
+                    let value = spin.value() as i64;
+                    if let Err(err) = config.borrow_mut().update(|cfg| {
+                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        plugin
+                            .custom
+                            .insert(key.clone(), toml::Value::Integer(value));
+                    }) {
+                        tracing::warn!(
+                            error = ?err,
+                            plugin_id,
+                            setting = key,
+                            "failed to save plugin custom setting"
+                        );
+                    }
+                });
+            }
+            row.upcast()
+        }
+    }
 }
 
 fn open_keyboard_settings() {

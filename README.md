@@ -84,10 +84,38 @@ name = "Example Web Plugin"
 description = "Searches a custom service"
 command = "my-gpotlight-plugin"
 args = ["--query", "{query}"]
+
+[[config]]
+key = "safe_mode"
+title = "Safe mode"
+description = "Filter potentially noisy results"
+type = "bool"
+default = true
+
+[[config]]
+key = "endpoint"
+title = "Endpoint"
+type = "text"
+default = "https://example.com"
+
+[[config]]
+key = "provider"
+title = "Provider"
+type = "choice"
+default = "primary"
+options = [
+  { value = "primary", label = "Primary" },
+  { value = "backup", label = "Backup" },
+]
 ```
 
 Each output line should look like:
 
 ```json
-{"title":"Result","subtitle":"Details","icon":"system-search-symbolic","action":{"type":"open-uri","uri":"https://example.com"}}
+{"title":"Result","subtitle":"Details","icon":"system-search-symbolic","pinned":false,"action":{"type":"open-uri","uri":"https://example.com"}}
 ```
+
+Gpotlight-owned plugin settings are configured in the settings window. Every
+plugin can be shown directly in global search or gated behind a trigger prefix
+such as `/` or `{`. External plugin custom settings are passed to the plugin
+process as JSON in `GPOTLIGHT_PLUGIN_CONFIG`.

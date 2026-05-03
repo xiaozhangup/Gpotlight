@@ -37,7 +37,7 @@ impl SpotlightWindow {
             .decorated(false)
             .resizable(false)
             .build();
-        let _ = app;
+        window.set_application(Some(app.as_ref()));
         window.add_css_class("transparent-host");
         theme::apply_to_window(&window);
 
@@ -193,9 +193,10 @@ impl SpotlightWindow {
         let results = self.results.clone();
         let selected_index = self.selected_index.clone();
         let window = self.window.clone();
+        let config = self.config.clone();
         self.entry.connect_activate(move |_| {
             if let Some(result) = results.borrow().get(*selected_index.borrow()) {
-                activate_result(result, window.upcast_ref());
+                activate_result_with_usage(result, window.upcast_ref(), &config);
             }
         });
 
@@ -203,11 +204,12 @@ impl SpotlightWindow {
         let result_offset = self.result_offset.clone();
         let selected_index = self.selected_index.clone();
         let window = self.window.clone();
+        let config = self.config.clone();
         self.list.connect_row_activated(move |_, row| {
             let index = *result_offset.borrow() + row.index() as usize;
             *selected_index.borrow_mut() = index;
             if let Some(result) = results.borrow().get(index) {
-                activate_result(result, window.upcast_ref());
+                activate_result_with_usage(result, window.upcast_ref(), &config);
             }
         });
 
@@ -364,6 +366,18 @@ impl SpotlightWindow {
     }
 }
 
+fn activate_result_with_usage(
+    result: &SearchResult,
+    window: &gtk::Window,
+    config: &Rc<RefCell<ConfigStore>>,
+) {
+    let key = result.usage_key();
+    if let Err(err) = config.borrow_mut().record_usage(&key) {
+        tracing::warn!(error = ?err, usage_key = key, "failed to record result usage");
+    }
+    activate_result(result, window);
+}
+
 fn render_results(
     list: &gtk::ListBox,
     results_view: &gtk::Box,
@@ -509,8 +523,7 @@ fn result_row(result: &SearchResult) -> gtk::ListBoxRow {
     outer.set_hexpand(true);
     outer.set_height_request(44);
 
-    let image =
-        gtk::Image::from_icon_name(result.icon.as_deref().unwrap_or("system-search-symbolic"));
+    let image = result_image(result.icon.as_deref());
     image.set_pixel_size(22);
 
     let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -540,6 +553,18 @@ fn result_row(result: &SearchResult) -> gtk::ListBoxRow {
     outer.append(&labels);
     row.set_child(Some(&outer));
     row
+}
+
+fn result_image(icon: Option<&str>) -> gtk::Image {
+    let Some(icon) = icon.filter(|icon| !icon.is_empty()) else {
+        return gtk::Image::from_icon_name("system-search-symbolic");
+    };
+
+    if icon.starts_with('/') {
+        gtk::Image::from_file(icon)
+    } else {
+        gtk::Image::from_icon_name(icon)
+    }
 }
 
 fn install_css() {

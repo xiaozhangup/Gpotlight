@@ -12,8 +12,14 @@ pub struct AppConfig {
     pub shortcuts_enabled: bool,
     #[serde(default = "default_tray_enabled")]
     pub tray_enabled: bool,
+    #[serde(default = "default_usage_ranking_enabled")]
+    pub usage_ranking_enabled: bool,
+    #[serde(default = "default_pinyin_search_enabled")]
+    pub pinyin_search_enabled: bool,
     pub window: WindowConfig,
     pub plugins: IndexMap<String, PluginConfig>,
+    #[serde(default)]
+    pub usage: IndexMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +34,14 @@ pub struct WindowConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginConfig {
+    #[serde(default = "default_plugin_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_plugin_show_in_global_search")]
+    pub show_in_global_search: bool,
+    #[serde(default)]
+    pub trigger_prefix: String,
+    #[serde(default)]
+    pub custom: IndexMap<String, toml::Value>,
 }
 
 impl Default for AppConfig {
@@ -38,6 +51,8 @@ impl Default for AppConfig {
             shortcut: "LOGO+space".to_string(),
             shortcuts_enabled: default_shortcuts_enabled(),
             tray_enabled: default_tray_enabled(),
+            usage_ranking_enabled: default_usage_ranking_enabled(),
+            pinyin_search_enabled: default_pinyin_search_enabled(),
             window: WindowConfig {
                 host_width: 960,
                 host_height: 620,
@@ -46,6 +61,7 @@ impl Default for AppConfig {
                 max_visible_results: default_max_visible_results(),
             },
             plugins: IndexMap::new(),
+            usage: IndexMap::new(),
         }
     }
 }
@@ -59,6 +75,22 @@ fn default_shortcuts_enabled() -> bool {
 }
 
 fn default_tray_enabled() -> bool {
+    true
+}
+
+fn default_usage_ranking_enabled() -> bool {
+    true
+}
+
+fn default_pinyin_search_enabled() -> bool {
+    true
+}
+
+fn default_plugin_enabled() -> bool {
+    true
+}
+
+fn default_plugin_show_in_global_search() -> bool {
     true
 }
 
@@ -93,12 +125,40 @@ impl ConfigStore {
         self.save()
     }
 
-    pub fn plugin_enabled(&self, id: &str) -> bool {
-        self.config
-            .plugins
-            .get(id)
-            .map(|plugin| plugin.enabled)
-            .unwrap_or(true)
+    pub fn plugin_config(&self, id: &str) -> PluginConfig {
+        self.config.plugins.get(id).cloned().unwrap_or_default()
+    }
+
+    pub fn plugin_query<'a>(&self, id: &str, query: &'a str) -> Option<&'a str> {
+        let plugin = self.plugin_config(id);
+        if !plugin.enabled {
+            return None;
+        }
+
+        if plugin.show_in_global_search {
+            return Some(query);
+        }
+
+        let prefix = plugin.trigger_prefix.trim();
+        if prefix.is_empty() {
+            return None;
+        }
+
+        query
+            .strip_prefix(prefix)
+            .map(str::trim_start)
+            .filter(|query| !query.is_empty())
+    }
+
+    pub fn usage_count(&self, key: &str) -> u32 {
+        self.config.usage.get(key).copied().unwrap_or(0)
+    }
+
+    pub fn record_usage(&mut self, key: &str) -> Result<()> {
+        self.update(|cfg| {
+            let count = cfg.usage.entry(key.to_string()).or_default();
+            *count = count.saturating_add(1);
+        })
     }
 
     fn save(&self) -> Result<()> {
@@ -109,6 +169,17 @@ impl ConfigStore {
         let raw = toml::to_string_pretty(&self.config)?;
         fs::write(&self.path, raw)
             .with_context(|| format!("failed to write {}", self.path.display()))
+    }
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_plugin_enabled(),
+            show_in_global_search: default_plugin_show_in_global_search(),
+            trigger_prefix: String::new(),
+            custom: IndexMap::new(),
+        }
     }
 }
 
