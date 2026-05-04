@@ -63,13 +63,13 @@ pub trait SearchPlugin {
 
 #[derive(Default)]
 pub struct PluginRegistry {
-    plugins: Vec<Box<dyn SearchPlugin>>,
+    plugins: Vec<Box<dyn SearchPlugin + Send + Sync>>,
 }
 
 impl PluginRegistry {
     pub fn register<P>(&mut self, plugin: P)
     where
-        P: SearchPlugin + 'static,
+        P: SearchPlugin + Send + Sync + 'static,
     {
         self.plugins.push(Box::new(plugin));
     }
@@ -89,7 +89,10 @@ impl PluginRegistry {
     pub fn search(&self, config: &ConfigStore, query: &str) -> Vec<SearchResult> {
         let app_config = config.current();
         let query_is_empty = query.trim().is_empty();
-        let mut results: Vec<SearchResult> = self
+
+        // Collect (plugin ref, query string, config) for each enabled plugin up front so
+        // we can hand them off to scoped threads without holding any RefCell borrows.
+        let plugin_calls: Vec<(&(dyn SearchPlugin + Send + Sync), String, PluginConfig)> = self
             .plugins
             .iter()
             .filter_map(|plugin| {
@@ -98,11 +101,35 @@ impl PluginRegistry {
                     (query_is_empty && plugin_config.enabled && plugin_config.show_in_global_search)
                         .then_some("")
                 })?;
-                Some(self.query_plugin(plugin.as_ref(), plugin_query, &plugin_config, app_config))
+                Some((plugin.as_ref(), plugin_query, plugin_config))
             })
-            .flatten()
-            .filter(|result| !query_is_empty || result.pinned)
             .collect();
+
+        // Run all plugins concurrently so slow external commands (e.g. Python scripts)
+        // execute in parallel rather than sequentially.
+        let mut results: Vec<SearchResult> = std::thread::scope(|scope| {
+            let handles: Vec<_> = plugin_calls
+                .iter()
+                .map(|(plugin, plugin_query, plugin_config)| {
+                    scope.spawn(|| {
+                        plugin
+                            .query_with_config(plugin_query, plugin_config, app_config)
+                            .into_iter()
+                            .map(|mut result| {
+                                result.source_plugin_id = Some(plugin.id().to_string());
+                                result
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect()
+        });
+
+        results.retain(|result| !query_is_empty || result.pinned);
 
         if app_config.usage_ranking_enabled {
             results.sort_by_key(|result| {

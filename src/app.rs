@@ -26,9 +26,9 @@ impl<'a> GpotlightApp<'a> {
         let locale = config.borrow().current().locale.clone();
         let i18n = Rc::new(I18n::load(&locale));
 
-        let mut plugins = PluginRegistry::default();
-        register_builtin_plugins(&mut plugins, config.borrow().current());
-        let plugins = Rc::new(RefCell::new(plugins));
+        // Start with an empty registry; plugins are loaded lazily after the window
+        // is set up so the UI is responsive from the very first toggle.
+        let plugins = Rc::new(RefCell::new(PluginRegistry::default()));
 
         Ok(Self {
             gtk_app,
@@ -40,6 +40,21 @@ impl<'a> GpotlightApp<'a> {
 
     pub fn start(self) -> Result<()> {
         Box::leak(Box::new(RuntimeHold(self.gtk_app.hold())));
+
+        // Kick off plugin loading in the next idle cycle so that all window
+        // setup and IPC registration finish first.  This keeps startup snappy
+        // and means the shortcut is already registered when the user first
+        // presses it.
+        {
+            let plugins = self.plugins.clone();
+            let config = self.config.clone();
+            glib::idle_add_local_once(move || {
+                register_builtin_plugins(
+                    &mut plugins.borrow_mut(),
+                    config.borrow().current(),
+                );
+            });
+        }
 
         let spotlight = Rc::new(SpotlightWindow::new(
             self.gtk_app,
