@@ -274,6 +274,16 @@ def result_for_project(project: Project) -> dict:
             "command": "code",
             "args": ["-r", project.path],
         },
+        "buttons": [
+            {
+                "title": "打开项目根目录",
+                "icon": "folder-open-symbolic",
+                "action": {
+                    "type": "open-uri",
+                    "uri": Path(project.path).resolve().as_uri(),
+                },
+            }
+        ],
     }
 
 

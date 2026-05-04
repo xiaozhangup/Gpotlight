@@ -15,6 +15,19 @@ pub struct SearchResult {
     pub icon: Option<String>,
     pub pinned: bool,
     pub action: PluginAction,
+    pub buttons: Vec<SearchResultButton>,
+    pub refresh_key: Option<String>,
+    pub refresh_interval_ms: Option<u64>,
+    pub source_plugin_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchResultButton {
+    pub title: String,
+    pub icon: Option<String>,
+    pub action: PluginAction,
+    pub close_on_activate: bool,
+    pub refresh_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,15 +88,20 @@ impl PluginRegistry {
 
     pub fn search(&self, config: &ConfigStore, query: &str) -> Vec<SearchResult> {
         let app_config = config.current();
+        let query_is_empty = query.trim().is_empty();
         let mut results: Vec<SearchResult> = self
             .plugins
             .iter()
             .filter_map(|plugin| {
-                let plugin_query = config.plugin_query(plugin.id(), query)?;
                 let plugin_config = config.plugin_config(plugin.id());
-                Some(plugin.query_with_config(plugin_query, &plugin_config, app_config))
+                let plugin_query = config.plugin_query(plugin.id(), query).or_else(|| {
+                    (query_is_empty && plugin_config.enabled && plugin_config.show_in_global_search)
+                        .then_some("")
+                })?;
+                Some(self.query_plugin(plugin.as_ref(), plugin_query, &plugin_config, app_config))
             })
             .flatten()
+            .filter(|result| !query_is_empty || result.pinned)
             .collect();
 
         if app_config.usage_ranking_enabled {
@@ -98,6 +116,39 @@ impl PluginRegistry {
         }
 
         results.into_iter().take(100).collect()
+    }
+
+    pub fn search_plugin(
+        &self,
+        config: &ConfigStore,
+        plugin_id: &str,
+        query: &str,
+    ) -> Vec<SearchResult> {
+        let Some(plugin) = self.plugins.iter().find(|plugin| plugin.id() == plugin_id) else {
+            return Vec::new();
+        };
+        let plugin_config = config.plugin_config(plugin.id());
+        if !plugin_config.enabled {
+            return Vec::new();
+        }
+        self.query_plugin(plugin.as_ref(), query, &plugin_config, config.current())
+    }
+
+    fn query_plugin(
+        &self,
+        plugin: &dyn SearchPlugin,
+        query: &str,
+        plugin_config: &PluginConfig,
+        app_config: &AppConfig,
+    ) -> Vec<SearchResult> {
+        plugin
+            .query_with_config(query, plugin_config, app_config)
+            .into_iter()
+            .map(|mut result| {
+                result.source_plugin_id = Some(plugin.id().to_string());
+                result
+            })
+            .collect()
     }
 }
 
@@ -135,6 +186,26 @@ pub struct PluginConfigChoice {
 impl SearchResult {
     pub fn usage_key(&self) -> String {
         match &self.action {
+            PluginAction::Noop => format!("noop:{}:{}", self.title, self.subtitle),
+            _ => self.action.usage_key_fragment(),
+        }
+    }
+}
+
+impl SearchResultButton {
+    pub fn usage_key(&self, result: &SearchResult) -> String {
+        format!(
+            "button:{}:{}:{}",
+            result.usage_key(),
+            self.title,
+            self.action.usage_key_fragment()
+        )
+    }
+}
+
+impl PluginAction {
+    fn usage_key_fragment(&self) -> String {
+        match self {
             PluginAction::LaunchDesktopFile(desktop_id) => format!("desktop:{desktop_id}"),
             PluginAction::OpenUri(uri) => format!("uri:{uri}"),
             PluginAction::CopyText(text) => format!("copy:{text}"),
@@ -142,13 +213,17 @@ impl SearchResult {
             PluginAction::LaunchCommand { command, args } => {
                 format!("command:{}:{}", command, args.join("\u{1f}"))
             }
-            PluginAction::Noop => format!("noop:{}:{}", self.title, self.subtitle),
+            PluginAction::Noop => "noop".to_string(),
         }
     }
 }
 
 pub fn activate_result(result: &SearchResult, window: &gtk::Window) {
-    match &result.action {
+    activate_action(&result.action, window, true);
+}
+
+pub fn activate_action(action: &PluginAction, window: &gtk::Window, close_window: bool) {
+    match action {
         PluginAction::LaunchDesktopFile(desktop_id) => {
             let ctx = gio::AppLaunchContext::new();
             if let Some(info) = gio::AppInfo::all().into_iter().find(|app| {
@@ -184,7 +259,67 @@ pub fn activate_result(result: &SearchResult, window: &gtk::Window) {
         PluginAction::Noop => {}
     }
 
-    window.set_visible(false);
+    if close_window {
+        window.set_visible(false);
+    }
 }
 
 pub type SharedRegistry = Rc<RefCell<PluginRegistry>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigStore;
+
+    struct StaticPlugin {
+        id: &'static str,
+        pinned: bool,
+    }
+
+    impl SearchPlugin for StaticPlugin {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn name(&self) -> &str {
+            self.id
+        }
+
+        fn description(&self) -> &str {
+            self.id
+        }
+
+        fn query(&self, query: &str) -> Vec<SearchResult> {
+            vec![SearchResult {
+                title: format!("{}:{query}", self.id),
+                subtitle: String::new(),
+                icon: None,
+                pinned: self.pinned,
+                action: PluginAction::Noop,
+                buttons: Vec::new(),
+                refresh_key: None,
+                refresh_interval_ms: None,
+                source_plugin_id: None,
+            }]
+        }
+    }
+
+    #[test]
+    fn empty_search_only_keeps_pinned_results() {
+        let mut registry = PluginRegistry::default();
+        registry.register(StaticPlugin {
+            id: "normal",
+            pinned: false,
+        });
+        registry.register(StaticPlugin {
+            id: "pinned",
+            pinned: true,
+        });
+        let config = ConfigStore::from_config_for_test(AppConfig::default());
+
+        let results = registry.search(&config, "");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "pinned:");
+    }
+}

@@ -1,10 +1,14 @@
 use crate::config::ConfigStore;
 use crate::i18n::I18n;
-use crate::plugin::{activate_result, SearchResult, SharedRegistry};
+use crate::plugin::{
+    activate_action, activate_result, SearchResult, SearchResultButton, SharedRegistry,
+};
 use crate::theme;
 use gtk::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 pub struct SpotlightWindow {
     window: gtk::Window,
@@ -16,6 +20,7 @@ pub struct SpotlightWindow {
     results: Rc<RefCell<Vec<SearchResult>>>,
     result_offset: Rc<RefCell<usize>>,
     selected_index: Rc<RefCell<usize>>,
+    refresh_tickets: Rc<RefCell<HashMap<String, u64>>>,
     config: Rc<RefCell<ConfigStore>>,
     plugins: SharedRegistry,
 }
@@ -59,6 +64,7 @@ impl SpotlightWindow {
         let results = Rc::new(RefCell::new(Vec::new()));
         let result_offset = Rc::new(RefCell::new(0));
         let selected_index = Rc::new(RefCell::new(0));
+        let refresh_tickets = Rc::new(RefCell::new(HashMap::new()));
 
         let list = gtk::ListBox::new();
         list.add_css_class("spotlight-results");
@@ -110,6 +116,7 @@ impl SpotlightWindow {
             results,
             result_offset,
             selected_index,
+            refresh_tickets,
             config,
             plugins,
         };
@@ -124,14 +131,16 @@ impl SpotlightWindow {
     pub fn toggle(&self) {
         if self.window.is_visible() {
             self.window.set_visible(false);
+            self.refresh_tickets.borrow_mut().clear();
         } else {
             self.present();
         }
     }
 
     pub fn present(&self) {
+        self.refresh_tickets.borrow_mut().clear();
         self.entry.set_text("");
-        self.clear_results();
+        self.refresh_results("");
         self.window.present();
         self.entry.grab_focus();
     }
@@ -162,34 +171,17 @@ impl SpotlightWindow {
             *self.selected_index.borrow(),
             cfg.max_visible_results,
             cfg.panel_width,
+            &self.window,
+            &self.config,
+            self,
         );
     }
 
     fn connect_signals(&self) {
-        let list = self.list.clone();
-        let results_view = self.results_view.clone();
-        let scroll_indicator = self.scroll_indicator.clone();
-        let results = self.results.clone();
-        let result_offset = self.result_offset.clone();
-        let selected_index = self.selected_index.clone();
-        let config = self.config.clone();
-        let plugins = self.plugins.clone();
+        let spotlight = self.clone_handles();
         self.entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
-            let found = plugins.borrow().search(&config.borrow(), &query);
-            *result_offset.borrow_mut() = 0;
-            *selected_index.borrow_mut() = 0;
-            render_results(
-                &list,
-                &results_view,
-                &scroll_indicator,
-                &found,
-                0,
-                0,
-                config.borrow().current().window.max_visible_results,
-                config.borrow().current().window.panel_width,
-            );
-            *results.borrow_mut() = found;
+            spotlight.refresh_results(&query);
         });
 
         let results = self.results.clone();
@@ -223,6 +215,8 @@ impl SpotlightWindow {
         let result_offset = self.result_offset.clone();
         let selected_index = self.selected_index.clone();
         let config = self.config.clone();
+        let window = self.window.clone();
+        let spotlight = self.clone_handles();
         scroll.connect_scroll(move |_, _, dy| {
             let results_ref = results.borrow();
             if results_ref.is_empty() {
@@ -261,6 +255,9 @@ impl SpotlightWindow {
                         next_selected,
                         config.borrow().current().window.max_visible_results,
                         config.borrow().current().window.panel_width,
+                        &window,
+                        &config,
+                        &spotlight,
                     );
                 }
             }
@@ -278,6 +275,7 @@ impl SpotlightWindow {
         let result_offset = self.result_offset.clone();
         let selected_index = self.selected_index.clone();
         let config = self.config.clone();
+        let spotlight = self.clone_handles();
         key.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
                 window.set_visible(false);
@@ -318,6 +316,9 @@ impl SpotlightWindow {
                         next_selected,
                         config.borrow().current().window.max_visible_results,
                         config.borrow().current().window.panel_width,
+                        &window,
+                        &config,
+                        &spotlight,
                     );
                 }
                 return glib::Propagation::Stop;
@@ -357,16 +358,139 @@ impl SpotlightWindow {
         });
     }
 
-    fn clear_results(&self) {
-        while let Some(row) = self.list.first_child() {
-            self.list.remove(&row);
-        }
-        self.list.set_visible(false);
-        self.results_view.set_visible(false);
-        self.scroll_indicator.set_visible(false);
-        self.results.borrow_mut().clear();
+    fn refresh_results(&self, query: &str) {
+        let found = self.plugins.borrow().search(&self.config.borrow(), query);
         *self.result_offset.borrow_mut() = 0;
         *self.selected_index.borrow_mut() = 0;
+        render_results(
+            &self.list,
+            &self.results_view,
+            &self.scroll_indicator,
+            &found,
+            0,
+            0,
+            self.config.borrow().current().window.max_visible_results,
+            self.config.borrow().current().window.panel_width,
+            &self.window,
+            &self.config,
+            self,
+        );
+        *self.results.borrow_mut() = found;
+    }
+
+    fn refresh_result_after(&self, result: &SearchResult, delay: Duration, replace_pending: bool) {
+        let Some(plugin_id) = result.source_plugin_id.clone() else {
+            return;
+        };
+        let Some(refresh_key) = result.refresh_key.clone() else {
+            return;
+        };
+        let ticket_key = format!("{plugin_id}:{refresh_key}");
+        let ticket = {
+            let mut tickets = self.refresh_tickets.borrow_mut();
+            if !replace_pending && tickets.contains_key(&ticket_key) {
+                return;
+            }
+            let ticket = tickets.entry(ticket_key.clone()).or_insert(0);
+            *ticket = ticket.saturating_add(1);
+            *ticket
+        };
+
+        let spotlight = self.clone_handles();
+        glib::timeout_add_local_once(delay, move || {
+            if !spotlight.window.is_visible() {
+                if spotlight.refresh_tickets.borrow().get(&ticket_key) == Some(&ticket) {
+                    spotlight.refresh_tickets.borrow_mut().remove(&ticket_key);
+                }
+                return;
+            }
+            if spotlight.refresh_tickets.borrow().get(&ticket_key) != Some(&ticket) {
+                return;
+            }
+            spotlight.refresh_tickets.borrow_mut().remove(&ticket_key);
+            spotlight.refresh_result(&plugin_id, &refresh_key);
+        });
+    }
+
+    fn refresh_result(&self, plugin_id: &str, refresh_key: &str) {
+        let query = self.entry.text().to_string();
+        let plugin_query = {
+            let config = self.config.borrow();
+            config
+                .plugin_query(plugin_id, &query)
+                .map(str::to_string)
+                .or_else(|| query.trim().is_empty().then(String::new))
+        };
+        let Some(plugin_query) = plugin_query else {
+            return;
+        };
+
+        let replacements =
+            self.plugins
+                .borrow()
+                .search_plugin(&self.config.borrow(), plugin_id, &plugin_query);
+        let Some(replacement) = replacements
+            .into_iter()
+            .find(|result| result.refresh_key.as_deref() == Some(refresh_key))
+        else {
+            return;
+        };
+
+        let mut results = self.results.borrow_mut();
+        let Some(index) = results.iter().position(|result| {
+            result.source_plugin_id.as_deref() == Some(plugin_id)
+                && result.refresh_key.as_deref() == Some(refresh_key)
+        }) else {
+            return;
+        };
+        results[index] = replacement;
+        let result = results[index].clone();
+        drop(results);
+
+        let offset = *self.result_offset.borrow();
+        let visible_count = visible_result_count(
+            self.results.borrow().len(),
+            self.config.borrow().current().window.max_visible_results,
+        );
+        if index < offset || index >= offset + visible_count {
+            return;
+        }
+        let Some(row) = self.list.row_at_index((index - offset) as i32) else {
+            return;
+        };
+        let max_text_width_chars = result_text_max_width_chars(
+            self.config.borrow().current().window.panel_width,
+            result.buttons.len(),
+        );
+        if !update_result_row_content(&row, &result, max_text_width_chars) {
+            row.set_child(Some(&result_row_content(
+                &result,
+                max_text_width_chars,
+                &self.window,
+                &self.config,
+                self,
+            )));
+        }
+        if let Some(interval) = result.refresh_interval_ms {
+            self.refresh_result_after(&result, Duration::from_millis(interval), false);
+        }
+    }
+
+    fn clone_handles(&self) -> Self {
+        Self {
+            window: self.window.clone(),
+            entry: self.entry.clone(),
+            panel: self.panel.clone(),
+            results_view: self.results_view.clone(),
+            list: self.list.clone(),
+            scroll_indicator: self.scroll_indicator.clone(),
+            results: self.results.clone(),
+            result_offset: self.result_offset.clone(),
+            selected_index: self.selected_index.clone(),
+            refresh_tickets: self.refresh_tickets.clone(),
+            config: self.config.clone(),
+            plugins: self.plugins.clone(),
+        }
     }
 }
 
@@ -382,6 +506,19 @@ fn activate_result_with_usage(
     activate_result(result, window);
 }
 
+fn activate_button_with_usage(
+    result: &SearchResult,
+    button: &SearchResultButton,
+    window: &gtk::Window,
+    config: &Rc<RefCell<ConfigStore>>,
+) {
+    let key = button.usage_key(result);
+    if let Err(err) = config.borrow_mut().record_usage(&key) {
+        tracing::warn!(error = ?err, usage_key = key, "failed to record result button usage");
+    }
+    activate_action(&button.action, window, button.close_on_activate);
+}
+
 fn render_results(
     list: &gtk::ListBox,
     results_view: &gtk::Box,
@@ -391,25 +528,41 @@ fn render_results(
     selected_index: usize,
     max_visible_results: i32,
     panel_width: i32,
+    window: &gtk::Window,
+    config: &Rc<RefCell<ConfigStore>>,
+    spotlight: &SpotlightWindow,
 ) {
     while let Some(row) = list.first_child() {
         list.remove(&row);
     }
 
     let visible_count = visible_result_count(results.len(), max_visible_results);
-    let max_text_width_chars = result_text_max_width_chars(panel_width);
     for result in results.iter().skip(offset).take(visible_count) {
-        list.append(&result_row(result, max_text_width_chars));
+        let max_text_width_chars = result_text_max_width_chars(panel_width, result.buttons.len());
+        list.append(&result_row(
+            result,
+            max_text_width_chars,
+            window,
+            config,
+            spotlight,
+        ));
     }
     let has_results = visible_count > 0;
     list.set_visible(has_results);
     results_view.set_visible(has_results);
     update_selection(list, offset, selected_index);
     update_scroll_indicator(scroll_indicator, results.len(), visible_count);
+
+    for result in results.iter().skip(offset).take(visible_count) {
+        if let Some(interval) = result.refresh_interval_ms {
+            spotlight.refresh_result_after(result, Duration::from_millis(interval), false);
+        }
+    }
 }
 
-fn result_text_max_width_chars(panel_width: i32) -> i32 {
-    ((panel_width - 120) / 8).clamp(12, 96)
+fn result_text_max_width_chars(panel_width: i32, button_count: usize) -> i32 {
+    let button_width = (button_count as i32 * 32).min(160);
+    ((panel_width - 120 - button_width) / 8).clamp(8, 96)
 }
 
 fn visible_result_count(result_count: usize, max_visible_results: i32) -> usize {
@@ -524,20 +677,45 @@ fn rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, width: f64, height: f6
     cr.close_path();
 }
 
-fn result_row(result: &SearchResult, max_text_width_chars: i32) -> gtk::ListBoxRow {
+fn result_row(
+    result: &SearchResult,
+    max_text_width_chars: i32,
+    window: &gtk::Window,
+    config: &Rc<RefCell<ConfigStore>>,
+    spotlight: &SpotlightWindow,
+) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_hexpand(true);
-    row.set_height_request(50);
+    row.set_height_request(58);
+    row.set_child(Some(&result_row_content(
+        result,
+        max_text_width_chars,
+        window,
+        config,
+        spotlight,
+    )));
+    row
+}
+
+fn result_row_content(
+    result: &SearchResult,
+    max_text_width_chars: i32,
+    window: &gtk::Window,
+    config: &Rc<RefCell<ConfigStore>>,
+    spotlight: &SpotlightWindow,
+) -> gtk::Box {
     let outer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     outer.add_css_class("result-row");
     outer.set_hexpand(true);
-    outer.set_height_request(44);
+    outer.set_height_request(52);
 
     let image = result_image(result.icon.as_deref());
-    image.set_pixel_size(22);
+    image.set_pixel_size(32);
+    image.set_widget_name("result-icon");
 
     let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
     labels.set_hexpand(true);
+    labels.set_halign(gtk::Align::Fill);
     labels.set_width_request(1);
     let title = gtk::Label::new(Some(&result.title));
     title.set_halign(gtk::Align::Start);
@@ -547,6 +725,7 @@ fn result_row(result: &SearchResult, max_text_width_chars: i32) -> gtk::ListBoxR
     title.set_single_line_mode(true);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.add_css_class("result-title");
+    title.set_widget_name("result-title");
 
     let subtitle_text = if result.subtitle.is_empty() {
         " "
@@ -561,24 +740,182 @@ fn result_row(result: &SearchResult, max_text_width_chars: i32) -> gtk::ListBoxR
     subtitle.set_single_line_mode(true);
     subtitle.add_css_class("result-subtitle");
     subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    subtitle.set_widget_name("result-subtitle");
 
     labels.append(&title);
     labels.append(&subtitle);
     outer.append(&image);
     outer.append(&labels);
-    row.set_child(Some(&outer));
-    row
+
+    if !result.buttons.is_empty() {
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        buttons.add_css_class("result-buttons");
+        buttons.set_hexpand(false);
+        buttons.set_halign(gtk::Align::End);
+        buttons.set_valign(gtk::Align::Center);
+        for button in &result.buttons {
+            let action_button = result_action_button(button);
+            let result = result.clone();
+            let button = button.clone();
+            let window = window.clone();
+            let config = config.clone();
+            let spotlight = spotlight.clone_handles();
+            action_button.connect_clicked(move |_| {
+                activate_button_with_usage(&result, &button, window.upcast_ref(), &config);
+                if let Some(refresh_after_ms) = button.refresh_after_ms {
+                    spotlight.refresh_result_after(
+                        &result,
+                        Duration::from_millis(refresh_after_ms),
+                        true,
+                    );
+                }
+            });
+            buttons.append(&action_button);
+        }
+        outer.append(&buttons);
+    }
+
+    outer
+}
+
+fn result_action_button(button: &SearchResultButton) -> gtk::Button {
+    let action_button = gtk::Button::new();
+    action_button.add_css_class("flat");
+    action_button.add_css_class("result-action-button");
+    action_button.set_tooltip_text(Some(&button.title));
+    action_button.set_valign(gtk::Align::Center);
+    action_button.set_focus_on_click(false);
+
+    if let Some(icon) = button.icon.as_deref().filter(|icon| !icon.is_empty()) {
+        let image = result_image(Some(icon));
+        image.set_pixel_size(16);
+        action_button.set_child(Some(&image));
+    } else {
+        let image = gtk::Image::from_icon_name("view-more-symbolic");
+        image.set_pixel_size(16);
+        action_button.set_child(Some(&image));
+    }
+
+    action_button
+}
+
+fn update_result_row_content(
+    row: &gtk::ListBoxRow,
+    result: &SearchResult,
+    max_text_width_chars: i32,
+) -> bool {
+    let Some(outer) = row
+        .child()
+        .and_then(|child| child.downcast::<gtk::Box>().ok())
+    else {
+        return false;
+    };
+    let buttons_match = outer
+        .last_child()
+        .and_then(|child| child.downcast::<gtk::Box>().ok())
+        .map(|buttons| buttons.has_css_class("result-buttons"))
+        .unwrap_or(false)
+        == !result.buttons.is_empty();
+    if !buttons_match {
+        return false;
+    }
+    if let Some(buttons) = outer
+        .last_child()
+        .and_then(|child| child.downcast::<gtk::Box>().ok())
+        .filter(|buttons| buttons.has_css_class("result-buttons"))
+    {
+        if !update_result_buttons(&buttons, &result.buttons) {
+            return false;
+        }
+    }
+
+    if let Some(image) = find_named_child::<gtk::Image>(&outer, "result-icon") {
+        set_image_icon(&image, result.icon.as_deref(), 32);
+    }
+    if let Some(title) = find_named_child::<gtk::Label>(&outer, "result-title") {
+        title.set_text(&result.title);
+        title.set_max_width_chars(max_text_width_chars);
+    }
+    if let Some(subtitle) = find_named_child::<gtk::Label>(&outer, "result-subtitle") {
+        let subtitle_text = if result.subtitle.is_empty() {
+            " "
+        } else {
+            &result.subtitle
+        };
+        subtitle.set_text(subtitle_text);
+        subtitle.set_max_width_chars(max_text_width_chars);
+    }
+    true
+}
+
+fn update_result_buttons(buttons: &gtk::Box, result_buttons: &[SearchResultButton]) -> bool {
+    let mut child = buttons.first_child();
+    for result_button in result_buttons {
+        let Some(current) = child else {
+            return false;
+        };
+        let Ok(button) = current.clone().downcast::<gtk::Button>() else {
+            return false;
+        };
+        button.set_tooltip_text(Some(&result_button.title));
+        if let Some(image) = button
+            .child()
+            .and_then(|child| child.downcast::<gtk::Image>().ok())
+        {
+            let icon = result_button
+                .icon
+                .as_deref()
+                .filter(|icon| !icon.is_empty())
+                .unwrap_or("view-more-symbolic");
+            set_image_icon(&image, Some(icon), 16);
+        }
+        child = current.next_sibling();
+    }
+    child.is_none()
+}
+
+fn find_named_child<T>(widget: &impl IsA<gtk::Widget>, name: &str) -> Option<T>
+where
+    T: IsA<gtk::Widget> + Clone + 'static,
+{
+    let widget = widget.as_ref();
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if current.widget_name() == name {
+            if let Ok(found) = current.clone().downcast::<T>() {
+                return Some(found);
+            }
+        }
+        if let Some(found) = find_named_child::<T>(&current, name) {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
 }
 
 fn result_image(icon: Option<&str>) -> gtk::Image {
+    let image = gtk::Image::new();
+    set_image_icon(&image, icon, 0);
+    image
+}
+
+fn set_image_icon(image: &gtk::Image, icon: Option<&str>, pixel_size: i32) {
     let Some(icon) = icon.filter(|icon| !icon.is_empty()) else {
-        return gtk::Image::from_icon_name("system-search-symbolic");
+        image.set_icon_name(Some("system-search-symbolic"));
+        if pixel_size > 0 {
+            image.set_pixel_size(pixel_size);
+        }
+        return;
     };
 
     if icon.starts_with('/') {
-        gtk::Image::from_file(icon)
+        image.set_from_file(Some(icon));
     } else {
-        gtk::Image::from_icon_name(icon)
+        image.set_icon_name(Some(icon));
+    }
+    if pixel_size > 0 {
+        image.set_pixel_size(pixel_size);
     }
 }
 
@@ -640,7 +977,7 @@ fn install_css() {
         .result-row {
             padding: 4px 8px;
             border-radius: 10px;
-            min-height: 44px;
+            min-height: 52px;
             transition: background-color 80ms ease-out;
         }
         .result-title {
@@ -649,6 +986,15 @@ fn install_css() {
         .result-subtitle {
             opacity: 0.72;
             font-size: 12px;
+        }
+        .result-buttons {
+            margin-left: 4px;
+        }
+        .result-action-button {
+            min-width: 28px;
+            min-height: 28px;
+            padding: 3px;
+            border-radius: 8px;
         }
         "#,
     );

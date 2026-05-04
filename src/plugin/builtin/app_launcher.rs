@@ -100,6 +100,10 @@ impl SearchPlugin for AppLauncherPlugin {
                 },
                 pinned: false,
                 action: PluginAction::LaunchDesktopFile(app.id.clone()),
+                buttons: Vec::new(),
+                refresh_key: None,
+                refresh_interval_ms: None,
+                source_plugin_id: None,
             })
             .collect()
     }

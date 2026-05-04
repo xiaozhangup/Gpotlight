@@ -1,0 +1,5 @@
+id = "bundled.mpris-control"
+name = "Media Controls"
+description = "Show and control active MPRIS media players"
+command = "mpris_control.py"
+args = ["{query}"]

@@ -1,6 +1,6 @@
 use super::{
     PluginAction, PluginConfigChoice, PluginConfigItem, PluginConfigKind, PluginRegistry,
-    SearchPlugin, SearchResult,
+    SearchPlugin, SearchResult, SearchResultButton,
 };
 use crate::config::{AppConfig, PluginConfig};
 use serde::Deserialize;
@@ -60,7 +60,19 @@ struct PluginResult {
     subtitle: Option<String>,
     icon: Option<String>,
     pinned: Option<bool>,
+    refresh_key: Option<String>,
+    refresh_interval_ms: Option<u64>,
     action: Option<PluginResultAction>,
+    buttons: Option<Vec<PluginResultButton>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginResultButton {
+    title: String,
+    icon: Option<String>,
+    close_on_activate: Option<bool>,
+    refresh_after_ms: Option<u64>,
+    action: PluginResultAction,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,19 +261,36 @@ impl SearchPlugin for ExternalCommandPlugin {
                 subtitle: item.subtitle.unwrap_or_default(),
                 icon: item.icon,
                 pinned: item.pinned.unwrap_or(false),
-                action: match item.action.unwrap_or(PluginResultAction::Noop) {
-                    PluginResultAction::OpenUri { uri } => PluginAction::OpenUri(uri),
-                    PluginResultAction::CopyText { text } => PluginAction::CopyText(text),
-                    PluginResultAction::LaunchCommand { command, args } => {
-                        PluginAction::LaunchCommand {
-                            command,
-                            args: args.unwrap_or_default(),
-                        }
-                    }
-                    PluginResultAction::Noop => PluginAction::Noop,
-                },
+                action: plugin_action(item.action.unwrap_or(PluginResultAction::Noop)),
+                refresh_key: item.refresh_key,
+                refresh_interval_ms: item.refresh_interval_ms,
+                source_plugin_id: None,
+                buttons: item
+                    .buttons
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|button| SearchResultButton {
+                        title: button.title,
+                        icon: button.icon,
+                        close_on_activate: button.close_on_activate.unwrap_or(true),
+                        refresh_after_ms: button.refresh_after_ms,
+                        action: plugin_action(button.action),
+                    })
+                    .collect(),
             })
             .collect()
+    }
+}
+
+fn plugin_action(action: PluginResultAction) -> PluginAction {
+    match action {
+        PluginResultAction::OpenUri { uri } => PluginAction::OpenUri(uri),
+        PluginResultAction::CopyText { text } => PluginAction::CopyText(text),
+        PluginResultAction::LaunchCommand { command, args } => PluginAction::LaunchCommand {
+            command,
+            args: args.unwrap_or_default(),
+        },
+        PluginResultAction::Noop => PluginAction::Noop,
     }
 }
 

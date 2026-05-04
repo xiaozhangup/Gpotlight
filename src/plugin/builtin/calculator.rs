@@ -28,6 +28,10 @@ impl SearchPlugin for CalculatorPlugin {
                 icon: Some("accessories-calculator-symbolic".to_string()),
                 pinned: true,
                 action: PluginAction::CopyText(format_number(value)),
+                buttons: Vec::new(),
+                refresh_key: None,
+                refresh_interval_ms: None,
+                source_plugin_id: None,
             }],
             None => Vec::new(),
         }

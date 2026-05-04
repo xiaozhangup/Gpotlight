@@ -160,6 +160,14 @@ impl ConfigStore {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_config_for_test(config: AppConfig) -> Self {
+        Self {
+            path: PathBuf::new(),
+            config,
+        }
+    }
+
     fn save(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)

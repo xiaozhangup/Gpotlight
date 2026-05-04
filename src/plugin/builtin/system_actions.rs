@@ -28,6 +28,10 @@ impl SearchPlugin for SystemActionsPlugin {
                 icon: Some("emblem-system-symbolic".to_string()),
                 pinned: false,
                 action: PluginAction::AppAction("settings".to_string()),
+                buttons: Vec::new(),
+                refresh_key: None,
+                refresh_interval_ms: None,
+                source_plugin_id: None,
             },
             SearchResult {
                 title: "Quit Gpotlight".to_string(),
@@ -35,6 +39,10 @@ impl SearchPlugin for SystemActionsPlugin {
                 icon: Some("application-exit-symbolic".to_string()),
                 pinned: false,
                 action: PluginAction::AppAction("quit".to_string()),
+                buttons: Vec::new(),
+                refresh_key: None,
+                refresh_interval_ms: None,
+                source_plugin_id: None,
             },
         ];
 

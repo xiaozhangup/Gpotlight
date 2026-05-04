@@ -77,6 +77,10 @@ impl SearchPlugin for WebSearchPlugin {
             icon: Some("web-browser-symbolic".to_string()),
             pinned: false,
             action: PluginAction::OpenUri(engine.search_url(&encoded)),
+            buttons: Vec::new(),
+            refresh_key: None,
+            refresh_interval_ms: None,
+            source_plugin_id: None,
         }]
     }
 }
