@@ -20,6 +20,8 @@ BuildRequires:  openssl-devel
 Requires:       gtk4
 Requires:       libadwaita
 Requires:       glib2
+Requires:       python3
+Requires:       python3-gobject
 
 %description
 Gpotlight is a Spotlight-style launcher for GNOME Wayland, built with Rust and GTK4.
@@ -27,11 +29,9 @@ Gpotlight is a Spotlight-style launcher for GNOME Wayland, built with Rust and G
 %prep
 
 %build
-cd %{gpotlight_project_dir}
 cargo build --release --locked
 
 %install
-cd %{gpotlight_project_dir}
 install -Dm0755 target/release/gpotlight %{buildroot}%{_bindir}/gpotlight
 install -Dm0644 data/io.github.gpotlight.Gpotlight.desktop %{buildroot}%{_datadir}/applications/io.github.gpotlight.Gpotlight.desktop
 install -Dm0644 data/icons/hicolor/scalable/apps/io.github.gpotlight.Gpotlight.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.gpotlight.Gpotlight.svg
