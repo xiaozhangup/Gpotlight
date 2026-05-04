@@ -14,7 +14,7 @@ pub struct SpotlightWindow {
     window: gtk::Window,
     entry: gtk::SearchEntry,
     panel: gtk::Box,
-    results_view: gtk::Box,
+    results_view: gtk::Overlay,
     list: gtk::ListBox,
     scroll_indicator: gtk::DrawingArea,
     results: Rc<RefCell<Vec<SearchResult>>>,
@@ -78,7 +78,9 @@ impl SpotlightWindow {
         scroll_indicator.add_css_class("result-scroll-indicator");
         scroll_indicator.set_content_width(6);
         scroll_indicator.set_hexpand(false);
+        scroll_indicator.set_halign(gtk::Align::End);
         scroll_indicator.set_valign(gtk::Align::Fill);
+        scroll_indicator.set_can_target(false);
         scroll_indicator.set_visible(false);
         {
             let results = results.clone();
@@ -96,11 +98,11 @@ impl SpotlightWindow {
             });
         }
 
-        let results_view = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let results_view = gtk::Overlay::new();
         results_view.add_css_class("results-view");
         results_view.set_hexpand(true);
-        results_view.append(&list);
-        results_view.append(&scroll_indicator);
+        results_view.set_child(Some(&list));
+        results_view.add_overlay(&scroll_indicator);
         results_view.set_visible(false);
 
         panel.append(&entry);
@@ -538,8 +540,8 @@ fn activate_button_with_usage(
 }
 
 fn result_text_max_width_chars(panel_width: i32, button_count: usize) -> i32 {
-    let button_width = (button_count as i32 * 32).min(160);
-    ((panel_width - 120 - button_width) / 8).clamp(8, 96)
+    let button_width = result_buttons_width(button_count);
+    ((panel_width - 120 - button_width) / 8).clamp(8, 88)
 }
 
 fn visible_result_count(result_count: usize, max_visible_results: i32) -> usize {
@@ -568,12 +570,7 @@ fn update_selection(list: &gtk::ListBox, offset: usize, selected_index: usize) {
 }
 
 fn update_scroll_indicator(indicator: &gtk::DrawingArea, total: usize, visible: usize) {
-    if total <= visible || visible == 0 {
-        indicator.set_visible(false);
-        return;
-    }
-
-    indicator.set_visible(true);
+    indicator.set_visible(total > visible && visible > 0);
     indicator.queue_draw();
 }
 
@@ -689,10 +686,12 @@ fn result_row_content(
     let image = result_image(result.icon.as_deref());
     image.set_pixel_size(32);
     image.set_widget_name("result-icon");
+    image.set_valign(gtk::Align::Center);
 
     let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
     labels.set_hexpand(true);
     labels.set_halign(gtk::Align::Fill);
+    labels.set_valign(gtk::Align::Center);
     labels.set_width_request(1);
     let title = gtk::Label::new(Some(&result.title));
     title.set_halign(gtk::Align::Start);
@@ -730,6 +729,7 @@ fn result_row_content(
         buttons.set_hexpand(false);
         buttons.set_halign(gtk::Align::End);
         buttons.set_valign(gtk::Align::Center);
+        buttons.set_width_request(result_buttons_width(result.buttons.len()));
         for button in &result.buttons {
             let action_button = result_action_button(button);
             let result = result.clone();
@@ -774,6 +774,14 @@ fn result_action_button(button: &SearchResultButton) -> gtk::Button {
     }
 
     action_button
+}
+
+fn result_buttons_width(button_count: usize) -> i32 {
+    if button_count == 0 {
+        0
+    } else {
+        button_count as i32 * 32 + button_count.saturating_sub(1) as i32 * 4
+    }
 }
 
 fn update_result_row_content(
