@@ -178,7 +178,6 @@ impl SpotlightWindow {
             *self.result_offset.borrow(),
             *self.selected_index.borrow(),
             cfg.max_visible_results,
-            cfg.panel_width,
         );
     }
 
@@ -253,7 +252,6 @@ impl SpotlightWindow {
                         next_offset,
                         next_selected,
                         config.borrow().current().window.max_visible_results,
-                        config.borrow().current().window.panel_width,
                     );
                 }
             }
@@ -306,7 +304,6 @@ impl SpotlightWindow {
                         next_offset,
                         next_selected,
                         config.borrow().current().window.max_visible_results,
-                        config.borrow().current().window.panel_width,
                     );
                 }
                 return glib::Propagation::Stop;
@@ -355,7 +352,6 @@ impl SpotlightWindow {
             0,
             0,
             self.config.borrow().current().window.max_visible_results,
-            self.config.borrow().current().window.panel_width,
         );
         *self.results.borrow_mut() = found;
     }
@@ -366,7 +362,6 @@ impl SpotlightWindow {
         offset: usize,
         selected_index: usize,
         max_visible_results: i32,
-        panel_width: i32,
     ) {
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
@@ -374,15 +369,8 @@ impl SpotlightWindow {
 
         let visible_count = visible_result_count(results.len(), max_visible_results);
         for result in results.iter().skip(offset).take(visible_count) {
-            let max_text_width_chars =
-                result_text_max_width_chars(panel_width, result.buttons.len());
-            self.list.append(&result_row(
-                result,
-                max_text_width_chars,
-                &self.window,
-                &self.config,
-                self,
-            ));
+            self.list
+                .append(&result_row(result, &self.window, &self.config, self));
         }
         let has_results = visible_count > 0;
         self.list.set_visible(has_results);
@@ -477,14 +465,9 @@ impl SpotlightWindow {
         let Some(row) = self.list.row_at_index((index - offset) as i32) else {
             return;
         };
-        let max_text_width_chars = result_text_max_width_chars(
-            self.config.borrow().current().window.panel_width,
-            result.buttons.len(),
-        );
-        if !update_result_row_content(&row, &result, max_text_width_chars) {
+        if !update_result_row_content(&row, &result) {
             row.set_child(Some(&result_row_content(
                 &result,
-                max_text_width_chars,
                 &self.window,
                 &self.config,
                 self,
@@ -537,11 +520,6 @@ fn activate_button_with_usage(
         tracing::warn!(error = ?err, usage_key = key, "failed to record result button usage");
     }
     activate_action(&button.action, window, button.close_on_activate);
-}
-
-fn result_text_max_width_chars(panel_width: i32, button_count: usize) -> i32 {
-    let button_width = result_buttons_width(button_count);
-    ((panel_width - 120 - button_width) / 8).clamp(8, 88)
 }
 
 fn visible_result_count(result_count: usize, max_visible_results: i32) -> usize {
@@ -653,7 +631,6 @@ fn rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, width: f64, height: f6
 
 fn result_row(
     result: &SearchResult,
-    max_text_width_chars: i32,
     window: &gtk::Window,
     config: &Rc<RefCell<ConfigStore>>,
     spotlight: &SpotlightWindow,
@@ -661,19 +638,12 @@ fn result_row(
     let row = gtk::ListBoxRow::new();
     row.set_hexpand(true);
     row.set_height_request(58);
-    row.set_child(Some(&result_row_content(
-        result,
-        max_text_width_chars,
-        window,
-        config,
-        spotlight,
-    )));
+    row.set_child(Some(&result_row_content(result, window, config, spotlight)));
     row
 }
 
 fn result_row_content(
     result: &SearchResult,
-    max_text_width_chars: i32,
     window: &gtk::Window,
     config: &Rc<RefCell<ConfigStore>>,
     spotlight: &SpotlightWindow,
@@ -694,11 +664,12 @@ fn result_row_content(
     labels.set_valign(gtk::Align::Center);
     labels.set_width_request(1);
     let title = gtk::Label::new(Some(&result.title));
-    title.set_halign(gtk::Align::Start);
+    title.set_halign(gtk::Align::Fill);
     title.set_hexpand(true);
     title.set_width_chars(1);
-    title.set_max_width_chars(max_text_width_chars);
+    title.set_max_width_chars(1);
     title.set_single_line_mode(true);
+    title.set_xalign(0.0);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.add_css_class("result-title");
     title.set_widget_name("result-title");
@@ -709,11 +680,12 @@ fn result_row_content(
         &result.subtitle
     };
     let subtitle = gtk::Label::new(Some(subtitle_text));
-    subtitle.set_halign(gtk::Align::Start);
+    subtitle.set_halign(gtk::Align::Fill);
     subtitle.set_hexpand(true);
     subtitle.set_width_chars(1);
-    subtitle.set_max_width_chars(max_text_width_chars);
+    subtitle.set_max_width_chars(1);
     subtitle.set_single_line_mode(true);
+    subtitle.set_xalign(0.0);
     subtitle.add_css_class("result-subtitle");
     subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
     subtitle.set_widget_name("result-subtitle");
@@ -784,11 +756,7 @@ fn result_buttons_width(button_count: usize) -> i32 {
     }
 }
 
-fn update_result_row_content(
-    row: &gtk::ListBoxRow,
-    result: &SearchResult,
-    max_text_width_chars: i32,
-) -> bool {
+fn update_result_row_content(row: &gtk::ListBoxRow, result: &SearchResult) -> bool {
     let Some(outer) = row
         .child()
         .and_then(|child| child.downcast::<gtk::Box>().ok())
@@ -819,7 +787,6 @@ fn update_result_row_content(
     }
     if let Some(title) = find_named_child::<gtk::Label>(&outer, "result-title") {
         title.set_text(&result.title);
-        title.set_max_width_chars(max_text_width_chars);
     }
     if let Some(subtitle) = find_named_child::<gtk::Label>(&outer, "result-subtitle") {
         let subtitle_text = if result.subtitle.is_empty() {
@@ -828,7 +795,6 @@ fn update_result_row_content(
             &result.subtitle
         };
         subtitle.set_text(subtitle_text);
-        subtitle.set_max_width_chars(max_text_width_chars);
     }
     true
 }
