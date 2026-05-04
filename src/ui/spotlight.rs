@@ -140,9 +140,14 @@ impl SpotlightWindow {
     pub fn present(&self) {
         self.refresh_tickets.borrow_mut().clear();
         self.entry.set_text("");
-        self.refresh_results("");
+        // Present the window immediately so it appears without delay, then load
+        // search results on the next event-loop iteration.
         self.window.present();
         self.entry.grab_focus();
+        let spotlight = self.clone_handles();
+        glib::idle_add_local_once(move || {
+            spotlight.refresh_results("");
+        });
     }
 
     pub fn apply_window_config(&self) {
