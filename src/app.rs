@@ -53,10 +53,7 @@ impl<'a> GpotlightApp<'a> {
             let plugins = self.plugins.clone();
             let config = self.config.clone();
             glib::idle_add_local_once(move || {
-                register_builtin_plugins(
-                    &mut plugins.borrow_mut(),
-                    config.borrow().current(),
-                );
+                register_builtin_plugins(&mut plugins.borrow_mut(), config.borrow().current());
             });
         }
 

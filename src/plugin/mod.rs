@@ -101,7 +101,7 @@ impl PluginRegistry {
                     (query_is_empty && plugin_config.enabled && plugin_config.show_in_global_search)
                         .then_some("")
                 })?;
-                Some((plugin.as_ref(), plugin_query, plugin_config))
+                Some((plugin.as_ref(), plugin_query.to_string(), plugin_config))
             })
             .collect();
 
