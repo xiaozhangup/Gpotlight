@@ -135,16 +135,18 @@ impl ConfigStore {
             return None;
         }
 
+        let prefix = plugin.trigger_prefix.trim();
+        if !prefix.is_empty() {
+            if let Some(prefixed_query) = query.strip_prefix(prefix) {
+                return Some(prefixed_query.trim_start());
+            }
+        }
+
         if plugin.show_in_global_search {
             return (!query.trim().is_empty()).then_some(query);
         }
 
-        let prefix = plugin.trigger_prefix.trim();
-        if prefix.is_empty() {
-            return None;
-        }
-
-        query.strip_prefix(prefix).map(str::trim_start)
+        None
     }
 
     pub fn usage_count(&self, key: &str) -> u32 {
@@ -226,6 +228,24 @@ mod tests {
 
         assert_eq!(store.plugin_query("test", ""), None);
         assert_eq!(store.plugin_query("test", "abc"), None);
+        assert_eq!(store.plugin_query("test", "/"), Some(""));
+        assert_eq!(store.plugin_query("test", "/abc"), Some("abc"));
+        assert_eq!(store.plugin_query("test", "/ abc"), Some("abc"));
+    }
+
+    #[test]
+    fn prefixed_global_plugin_prefers_prefix_mode_when_prefix_matches() {
+        let store = store_with_plugin(
+            "test",
+            PluginConfig {
+                show_in_global_search: true,
+                trigger_prefix: "/".to_string(),
+                ..PluginConfig::default()
+            },
+        );
+
+        assert_eq!(store.plugin_query("test", ""), None);
+        assert_eq!(store.plugin_query("test", "abc"), Some("abc"));
         assert_eq!(store.plugin_query("test", "/"), Some(""));
         assert_eq!(store.plugin_query("test", "/abc"), Some("abc"));
         assert_eq!(store.plugin_query("test", "/ abc"), Some("abc"));
