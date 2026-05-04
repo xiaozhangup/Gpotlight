@@ -3,7 +3,6 @@ mod calculator;
 mod system_actions;
 mod web_search;
 
-use crate::config::AppConfig;
 use crate::plugin::manifest::register_manifest_plugins;
 use crate::plugin::PluginRegistry;
 
@@ -12,7 +11,7 @@ use calculator::CalculatorPlugin;
 use system_actions::SystemActionsPlugin;
 use web_search::WebSearchPlugin;
 
-pub fn register_builtin_plugins(registry: &mut PluginRegistry, _config: &AppConfig) {
+pub fn register_builtin_plugins(registry: &mut PluginRegistry) {
     registry.register(SystemActionsPlugin);
     registry.register(AppLauncherPlugin::load());
     registry.register(CalculatorPlugin);

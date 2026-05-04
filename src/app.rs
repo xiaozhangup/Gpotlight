@@ -7,6 +7,7 @@ use crate::ui::{SettingsWindow, SpotlightWindow};
 use adw::prelude::*;
 use anyhow::Result;
 use gio::ApplicationHoldGuard;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -41,27 +42,27 @@ impl<'a> GpotlightApp<'a> {
     pub fn start(self) -> Result<()> {
         Box::leak(Box::new(RuntimeHold(self.gtk_app.hold())));
 
-        // Kick off plugin loading in the next idle cycle so that all window
-        // setup and IPC registration finish first.  This keeps startup snappy
-        // and means the shortcut is already registered when the user first
-        // presses it.  The registry is empty until the callback fires, but
-        // that window is a single event-loop iteration – far too short for
-        // any real user interaction to arrive.  If the window is opened with
-        // an empty registry the results list will simply be empty until the
-        // next search query.
+        let plugins_loaded = Rc::new(Cell::new(false));
         {
             let plugins = self.plugins.clone();
-            let config = self.config.clone();
+            let plugins_loaded = plugins_loaded.clone();
             glib::idle_add_local_once(move || {
-                register_builtin_plugins(&mut plugins.borrow_mut(), config.borrow().current());
+                load_plugins_once(&plugins, &plugins_loaded);
             });
         }
+
+        let ensure_plugins_loaded: Rc<dyn Fn()> = {
+            let plugins = self.plugins.clone();
+            let plugins_loaded = plugins_loaded.clone();
+            Rc::new(move || load_plugins_once(&plugins, &plugins_loaded))
+        };
 
         let spotlight = Rc::new(SpotlightWindow::new(
             self.gtk_app,
             self.i18n.clone(),
             self.config.clone(),
             self.plugins.clone(),
+            ensure_plugins_loaded,
         ));
 
         let toggle_action = gio::SimpleAction::new("toggle", None);
@@ -94,19 +95,34 @@ impl<'a> GpotlightApp<'a> {
             },
         ));
 
-        let settings = Rc::new(SettingsWindow::new(
-            self.gtk_app,
-            self.i18n.clone(),
-            self.config.clone(),
-            self.plugins.clone(),
-            spotlight.clone(),
-            tray_manager.clone(),
-        ));
-
         let settings_action = gio::SimpleAction::new("settings", None);
         {
-            let settings = settings.clone();
-            settings_action.connect_activate(move |_, _| settings.present());
+            let app = self.gtk_app.clone();
+            let i18n = self.i18n.clone();
+            let config = self.config.clone();
+            let plugins = self.plugins.clone();
+            let spotlight = spotlight.clone();
+            let tray_manager = tray_manager.clone();
+            let plugins_loaded = plugins_loaded.clone();
+            let settings = Rc::new(RefCell::new(None::<Rc<SettingsWindow>>));
+            settings_action.connect_activate(move |_, _| {
+                load_plugins_once(&plugins, &plugins_loaded);
+                let settings = {
+                    let mut slot = settings.borrow_mut();
+                    slot.get_or_insert_with(|| {
+                        Rc::new(SettingsWindow::new(
+                            &app,
+                            i18n.clone(),
+                            config.clone(),
+                            plugins.clone(),
+                            spotlight.clone(),
+                            tray_manager.clone(),
+                        ))
+                    })
+                    .clone()
+                };
+                settings.present();
+            });
         }
         self.gtk_app.add_action(&settings_action);
 
@@ -128,4 +144,13 @@ impl<'a> GpotlightApp<'a> {
         spotlight.prime();
         Ok(())
     }
+}
+
+fn load_plugins_once(plugins: &Rc<RefCell<PluginRegistry>>, loaded: &Rc<Cell<bool>>) {
+    if loaded.get() {
+        return;
+    }
+
+    register_builtin_plugins(&mut plugins.borrow_mut());
+    loaded.set(true);
 }

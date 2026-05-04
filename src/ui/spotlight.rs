@@ -23,6 +23,7 @@ pub struct SpotlightWindow {
     refresh_tickets: Rc<RefCell<HashMap<String, u64>>>,
     config: Rc<RefCell<ConfigStore>>,
     plugins: SharedRegistry,
+    ensure_plugins_loaded: Rc<dyn Fn()>,
 }
 
 impl SpotlightWindow {
@@ -31,6 +32,7 @@ impl SpotlightWindow {
         i18n: Rc<I18n>,
         config: Rc<RefCell<ConfigStore>>,
         plugins: SharedRegistry,
+        ensure_plugins_loaded: Rc<dyn Fn()>,
     ) -> Self {
         install_css();
 
@@ -119,6 +121,7 @@ impl SpotlightWindow {
             refresh_tickets,
             config,
             plugins,
+            ensure_plugins_loaded,
         };
         this.connect_signals();
         this
@@ -146,6 +149,7 @@ impl SpotlightWindow {
         self.entry.grab_focus();
         let spotlight = self.clone_handles();
         glib::idle_add_local_once(move || {
+            (spotlight.ensure_plugins_loaded)();
             spotlight.refresh_results("");
         });
     }
@@ -167,18 +171,12 @@ impl SpotlightWindow {
                 panel.set_width_request(cfg.panel_width);
             }
         }
-        render_results(
-            &self.list,
-            &self.results_view,
-            &self.scroll_indicator,
+        self.render_results(
             &self.results.borrow(),
             *self.result_offset.borrow(),
             *self.selected_index.borrow(),
             cfg.max_visible_results,
             cfg.panel_width,
-            &self.window,
-            &self.config,
-            self,
         );
     }
 
@@ -214,13 +212,10 @@ impl SpotlightWindow {
 
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         let list = self.list.clone();
-        let results_view = self.results_view.clone();
-        let scroll_indicator = self.scroll_indicator.clone();
         let results = self.results.clone();
         let result_offset = self.result_offset.clone();
         let selected_index = self.selected_index.clone();
         let config = self.config.clone();
-        let window = self.window.clone();
         let spotlight = self.clone_handles();
         scroll.connect_scroll(move |_, _, dy| {
             let results_ref = results.borrow();
@@ -251,18 +246,12 @@ impl SpotlightWindow {
                 if next_offset == current_offset {
                     update_selection(&list, current_offset, next_selected);
                 } else {
-                    render_results(
-                        &list,
-                        &results_view,
-                        &scroll_indicator,
+                    spotlight.render_results(
                         &results_ref,
                         next_offset,
                         next_selected,
                         config.borrow().current().window.max_visible_results,
                         config.borrow().current().window.panel_width,
-                        &window,
-                        &config,
-                        &spotlight,
                     );
                 }
             }
@@ -274,8 +263,6 @@ impl SpotlightWindow {
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let window = self.window.clone();
         let list = self.list.clone();
-        let results_view = self.results_view.clone();
-        let scroll_indicator = self.scroll_indicator.clone();
         let results = self.results.clone();
         let result_offset = self.result_offset.clone();
         let selected_index = self.selected_index.clone();
@@ -312,18 +299,12 @@ impl SpotlightWindow {
                 if next_offset == current_offset {
                     update_selection(&list, current_offset, next_selected);
                 } else {
-                    render_results(
-                        &list,
-                        &results_view,
-                        &scroll_indicator,
+                    spotlight.render_results(
                         &results_ref,
                         next_offset,
                         next_selected,
                         config.borrow().current().window.max_visible_results,
                         config.borrow().current().window.panel_width,
-                        &window,
-                        &config,
-                        &spotlight,
                     );
                 }
                 return glib::Propagation::Stop;
@@ -367,20 +348,51 @@ impl SpotlightWindow {
         let found = self.plugins.borrow().search(&self.config.borrow(), query);
         *self.result_offset.borrow_mut() = 0;
         *self.selected_index.borrow_mut() = 0;
-        render_results(
-            &self.list,
-            &self.results_view,
-            &self.scroll_indicator,
+        self.render_results(
             &found,
             0,
             0,
             self.config.borrow().current().window.max_visible_results,
             self.config.borrow().current().window.panel_width,
-            &self.window,
-            &self.config,
-            self,
         );
         *self.results.borrow_mut() = found;
+    }
+
+    fn render_results(
+        &self,
+        results: &[SearchResult],
+        offset: usize,
+        selected_index: usize,
+        max_visible_results: i32,
+        panel_width: i32,
+    ) {
+        while let Some(row) = self.list.first_child() {
+            self.list.remove(&row);
+        }
+
+        let visible_count = visible_result_count(results.len(), max_visible_results);
+        for result in results.iter().skip(offset).take(visible_count) {
+            let max_text_width_chars =
+                result_text_max_width_chars(panel_width, result.buttons.len());
+            self.list.append(&result_row(
+                result,
+                max_text_width_chars,
+                &self.window,
+                &self.config,
+                self,
+            ));
+        }
+        let has_results = visible_count > 0;
+        self.list.set_visible(has_results);
+        self.results_view.set_visible(has_results);
+        update_selection(&self.list, offset, selected_index);
+        update_scroll_indicator(&self.scroll_indicator, results.len(), visible_count);
+
+        for result in results.iter().skip(offset).take(visible_count) {
+            if let Some(interval) = result.refresh_interval_ms {
+                self.refresh_result_after(result, Duration::from_millis(interval), false);
+            }
+        }
     }
 
     fn refresh_result_after(&self, result: &SearchResult, delay: Duration, replace_pending: bool) {
@@ -495,6 +507,7 @@ impl SpotlightWindow {
             refresh_tickets: self.refresh_tickets.clone(),
             config: self.config.clone(),
             plugins: self.plugins.clone(),
+            ensure_plugins_loaded: self.ensure_plugins_loaded.clone(),
         }
     }
 }
@@ -522,47 +535,6 @@ fn activate_button_with_usage(
         tracing::warn!(error = ?err, usage_key = key, "failed to record result button usage");
     }
     activate_action(&button.action, window, button.close_on_activate);
-}
-
-fn render_results(
-    list: &gtk::ListBox,
-    results_view: &gtk::Box,
-    scroll_indicator: &gtk::DrawingArea,
-    results: &[SearchResult],
-    offset: usize,
-    selected_index: usize,
-    max_visible_results: i32,
-    panel_width: i32,
-    window: &gtk::Window,
-    config: &Rc<RefCell<ConfigStore>>,
-    spotlight: &SpotlightWindow,
-) {
-    while let Some(row) = list.first_child() {
-        list.remove(&row);
-    }
-
-    let visible_count = visible_result_count(results.len(), max_visible_results);
-    for result in results.iter().skip(offset).take(visible_count) {
-        let max_text_width_chars = result_text_max_width_chars(panel_width, result.buttons.len());
-        list.append(&result_row(
-            result,
-            max_text_width_chars,
-            window,
-            config,
-            spotlight,
-        ));
-    }
-    let has_results = visible_count > 0;
-    list.set_visible(has_results);
-    results_view.set_visible(has_results);
-    update_selection(list, offset, selected_index);
-    update_scroll_indicator(scroll_indicator, results.len(), visible_count);
-
-    for result in results.iter().skip(offset).take(visible_count) {
-        if let Some(interval) = result.refresh_interval_ms {
-            spotlight.refresh_result_after(result, Duration::from_millis(interval), false);
-        }
-    }
 }
 
 fn result_text_max_width_chars(panel_width: i32, button_count: usize) -> i32 {
@@ -820,7 +792,7 @@ fn update_result_row_content(
         .and_then(|child| child.downcast::<gtk::Box>().ok())
         .map(|buttons| buttons.has_css_class("result-buttons"))
         .unwrap_or(false)
-        == !result.buttons.is_empty();
+        != result.buttons.is_empty();
     if !buttons_match {
         return false;
     }

@@ -95,7 +95,7 @@ enum IpcCommand {
 fn socket_path() -> Result<PathBuf> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .or_else(|| dirs::runtime_dir())
+        .or_else(dirs::runtime_dir)
         .context("XDG_RUNTIME_DIR is unavailable")?;
     Ok(runtime_dir.join(SOCKET_NAME))
 }

@@ -165,11 +165,9 @@ fn pinyin_search_text(text: &str) -> String {
     let mut plain = String::new();
     let mut initials = String::new();
 
-    for item in text.to_pinyin() {
-        if let Some(pinyin) = item {
-            plain.push_str(pinyin.plain());
-            initials.push_str(pinyin.first_letter());
-        }
+    for pinyin in text.to_pinyin().flatten() {
+        plain.push_str(pinyin.plain());
+        initials.push_str(pinyin.first_letter());
     }
 
     format!("{} {}", plain.to_lowercase(), initials.to_lowercase())
