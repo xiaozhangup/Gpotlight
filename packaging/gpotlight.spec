@@ -7,6 +7,8 @@ Summary:        Spotlight-style launcher for GNOME
 
 License:        MIT
 URL:            https://github.com/gpotlight/gpotlight
+VCS:            {{{ git_repo_vcs }}}
+Source0:        {{{ git_repo_pack }}}
 
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -27,6 +29,7 @@ Requires:       python3-gobject
 Gpotlight is a Spotlight-style launcher for GNOME Wayland, built with Rust and GTK4.
 
 %prep
+{{{ git_repo_setup_macro }}}
 
 %build
 cargo build --release --locked
