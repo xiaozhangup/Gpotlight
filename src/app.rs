@@ -44,7 +44,11 @@ impl<'a> GpotlightApp<'a> {
         // Kick off plugin loading in the next idle cycle so that all window
         // setup and IPC registration finish first.  This keeps startup snappy
         // and means the shortcut is already registered when the user first
-        // presses it.
+        // presses it.  The registry is empty until the callback fires, but
+        // that window is a single event-loop iteration – far too short for
+        // any real user interaction to arrive.  If the window is opened with
+        // an empty registry the results list will simply be empty until the
+        // next search query.
         {
             let plugins = self.plugins.clone();
             let config = self.config.clone();

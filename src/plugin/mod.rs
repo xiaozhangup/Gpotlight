@@ -125,7 +125,13 @@ impl PluginRegistry {
                 .collect();
             handles
                 .into_iter()
-                .flat_map(|h| h.join().unwrap_or_default())
+                .flat_map(|h| match h.join() {
+                    Ok(results) => results,
+                    Err(_) => {
+                        tracing::warn!("plugin query thread panicked, skipping its results");
+                        Vec::new()
+                    }
+                })
                 .collect()
         });
 
