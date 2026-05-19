@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           gpotlight
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        Spotlight-style launcher for GNOME
 
@@ -48,6 +48,9 @@ cp -a plugins/. %{buildroot}%{_datadir}/gpotlight/plugins/
 %{_datadir}/gpotlight/plugins
 
 %changelog
+* Tue May 19 2026 Gpotlight Developers <noreply@example.com> - 0.1.2-1
+- Add color preview plugin and require GTK 4.22.
+
 * Mon May 04 2026 Gpotlight Developers <noreply@example.com> - 0.1.1-1
 - Add result buttons and bundled media/project plugins.
 
