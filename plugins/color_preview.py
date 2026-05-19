@@ -30,10 +30,21 @@ def normalize_color(raw: str) -> tuple[str, int, int, int, int | None] | None:
 def color_icon(red: int, green: int, blue: int, alpha: int | None) -> str:
     opacity = "" if alpha is None else f' fill-opacity="{alpha / 255:.3f}"'
     fill = f"#{red:02X}{green:02X}{blue:02X}"
+    background = ""
+    if alpha is not None:
+        background = """
+  <rect x="4" y="4" width="56" height="56" fill="#f6f5f4"/>
+  <path d="M4 60 60 4v56z" fill="#deddda"/>"""
+
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#f6f5f4"/>
-  <path d="M0 64 64 0v64z" fill="#deddda"/>
-  <rect x="4" y="4" width="56" height="56" rx="12" fill="{fill}"{opacity}/>
+  <defs>
+    <clipPath id="swatch">
+      <rect x="4" y="4" width="56" height="56" rx="12"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#swatch)">{background}
+    <rect x="4" y="4" width="56" height="56" fill="{fill}"{opacity}/>
+  </g>
   <rect x="4" y="4" width="56" height="56" rx="12" fill="none" stroke="#000000" stroke-opacity="0.22" stroke-width="2"/>
 </svg>
 """

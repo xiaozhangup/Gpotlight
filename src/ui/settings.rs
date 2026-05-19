@@ -264,10 +264,8 @@ impl SettingsWindow {
             }
             row.add_row(&global_search);
 
-            let prefix_entry = gtk::Entry::new();
+            let prefix_entry = settings_entry(8, 16);
             prefix_entry.set_text(&plugin_config.trigger_prefix);
-            prefix_entry.set_width_chars(8);
-            prefix_entry.set_max_width_chars(16);
             let prefix_row = adw::ActionRow::builder()
                 .title(i18n.t("plugin_trigger_prefix"))
                 .subtitle(i18n.t("plugin_trigger_prefix_hint"))
@@ -327,6 +325,15 @@ fn spin_row(title: &str, spin: &gtk::SpinButton) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).build();
     row.add_suffix(spin);
     row
+}
+
+fn settings_entry(width_chars: i32, max_width_chars: i32) -> gtk::Entry {
+    let entry = gtk::Entry::new();
+    entry.set_valign(gtk::Align::Center);
+    entry.set_width_chars(width_chars);
+    entry.set_max_width_chars(max_width_chars);
+    entry.set_height_request(34);
+    entry
 }
 
 fn plugin_summary(config: &PluginConfig, description: &str) -> String {
@@ -389,7 +396,7 @@ fn custom_config_row(
             row.upcast()
         }
         PluginConfigKind::Text => {
-            let entry = gtk::Entry::new();
+            let entry = settings_entry(16, 28);
             entry.set_text(
                 config
                     .borrow()
