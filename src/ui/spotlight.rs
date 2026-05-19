@@ -860,13 +860,51 @@ fn set_image_icon(image: &gtk::Image, icon: Option<&str>, pixel_size: i32) {
         return;
     };
 
-    if icon.starts_with('/') {
+    if let Some(svg) = icon.strip_prefix("data:image/svg+xml,") {
+        let svg = percent_decode(svg);
+        let bytes = glib::Bytes::from_owned(svg.into_bytes());
+        image.set_paintable(Some(&gtk::Svg::from_bytes(&bytes)));
+    } else if icon.starts_with('/') {
         image.set_from_file(Some(icon));
     } else {
         image.set_icon_name(Some(icon));
     }
     if pixel_size > 0 {
         image.set_pixel_size(pixel_size);
+    }
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                decoded.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+
+        decoded.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
     }
 }
 

@@ -12,14 +12,14 @@ Source0:        {{{ git_repo_pack }}}
 
 BuildRequires:  cargo
 BuildRequires:  rust
-BuildRequires:  gtk4-devel
+BuildRequires:  gtk4-devel >= 4.22
 BuildRequires:  libadwaita-devel
 BuildRequires:  glib2-devel
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  dbus-devel
 BuildRequires:  openssl-devel
 
-Requires:       gtk4
+Requires:       gtk4 >= 4.22
 Requires:       libadwaita
 Requires:       glib2
 Requires:       python3

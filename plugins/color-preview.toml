@@ -1,0 +1,5 @@
+id = "bundled.color-preview"
+name = "Color Preview"
+description = "Preview hex colors as result icons"
+command = "color_preview.py"
+args = ["{query}"]
