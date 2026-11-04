@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           gpotlight
-Version:        0.1.6
+Version:        0.1.7
 Release:        1%{?dist}
 Summary:        Spotlight-style launcher for GNOME
 
@@ -50,6 +50,9 @@ cp -a plugins/. %{buildroot}%{_datadir}/gpotlight/plugins/
 %{_datadir}/gpotlight/plugins
 
 %changelog
+* Wed Nov 04 2026 Gpotlight Developers <noreply@example.com> - 0.1.7-1
+- Refresh launcher styling and request Wayland background blur on supported desktops.
+
 * Wed Nov 04 2026 Gpotlight Developers <noreply@example.com> - 0.1.6-1
 - Ship responsive background search and reduced idle resource use.
 - Include browser history search with read-only access to locked browser databases.

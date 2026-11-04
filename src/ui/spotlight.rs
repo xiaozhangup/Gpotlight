@@ -69,7 +69,7 @@ impl SpotlightWindow {
         host.set_valign(gtk::Align::Start);
         host.set_margin_top(cfg.panel_offset_y);
 
-        let panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let panel = gtk::Box::new(gtk::Orientation::Vertical, 6);
         panel.set_width_request(cfg.panel_width);
         panel.add_css_class("spotlight-panel");
 
@@ -1102,23 +1102,28 @@ fn install_css() {
             background: transparent;
         }
         .spotlight-panel {
-            border: 1px solid alpha(@theme_fg_color, 0.16);
-            border-radius: 18px;
-            padding: 10px 10px 10px 10px;
-            box-shadow: 0 18px 48px alpha(black, 0.34);
+            border: 1px solid alpha(@theme_fg_color, 0.15);
+            border-radius: 22px;
+            padding: 12px;
+            box-shadow: 0 18px 48px alpha(black, 0.30), 0 2px 8px alpha(black, 0.12);
         }
         window.system-light .spotlight-panel {
-            background: rgba(250, 250, 250, 0.94);
+            background: rgba(250, 250, 252, 0.94);
             color: rgb(36, 36, 36);
         }
         window.system-dark .spotlight-panel {
-            background: rgba(34, 34, 36, 0.94);
+            background: rgba(30, 31, 36, 0.94);
             color: rgb(238, 238, 238);
         }
         .spotlight-entry {
-            min-height: 48px;
-            font-size: 20px;
-            border-radius: 12px;
+            min-height: 52px;
+            font-size: 21px;
+            border-radius: 14px;
+            padding-left: 12px;
+            padding-right: 12px;
+            background: alpha(@theme_fg_color, 0.06);
+            box-shadow: none;
+            border: 1px solid alpha(@theme_fg_color, 0.08);
             margin: 0;
         }
         .spotlight-results {
@@ -1133,24 +1138,24 @@ fn install_css() {
             min-width: 6px;
         }
         .spotlight-results row {
-            border-radius: 10px;
-            margin-top: 4px;
+            border-radius: 12px;
+            margin-top: 3px;
             transition: background-color 80ms ease-out;
         }
         .spotlight-results row:first-child {
-            margin-top: 6px;
+            margin-top: 3px;
         }
         .spotlight-results row:selected,
         .spotlight-results row:selected:hover,
         .spotlight-results row:selected:focus {
-            background: alpha(@accent_bg_color, 0.20);
-            border-radius: 10px;
+            background: alpha(@accent_bg_color, 0.22);
+            border-radius: 12px;
         }
         .spotlight-results row:selected .result-row {
             border-radius: 10px;
         }
         .result-row {
-            padding: 4px 8px;
+            padding: 4px 12px;
             border-radius: 10px;
             min-height: 52px;
             transition: background-color 80ms ease-out;
@@ -1174,11 +1179,29 @@ fn install_css() {
         "#,
     );
 
+    // GTK 4.24 translates backdrop-filter into ext-background-effect-v1.
+    // Older supported GTK versions keep the more opaque surface above.
+    let blur_provider = gtk::CssProvider::new();
+    if gtk::major_version() > 4 || gtk::minor_version() >= 24 {
+        blur_provider.load_from_string(
+            r#"
+            .spotlight-panel { backdrop-filter: blur(24px); }
+            window.system-light .spotlight-panel { background: rgba(250, 250, 252, 0.78); }
+            window.system-dark .spotlight-panel { background: rgba(30, 31, 36, 0.78); }
+            "#,
+        );
+    }
+
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &blur_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
         );
     }
 }

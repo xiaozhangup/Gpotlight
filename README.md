@@ -4,6 +4,8 @@ Gpotlight is a Spotlight-style launcher for GNOME 50 on Wayland, built with Rust
 
 The app uses a large transparent GTK window as a centered container. GNOME centers that window, while the visible launcher surface is rendered near the upper center inside it. This avoids compositor-specific positioning hacks on Wayland.
 
+On GTK 4.24 and a Wayland compositor supporting `ext-background-effect-v1` (such as GNOME 51), the launcher requests background blur behind its translucent panel. GTK 4.22 uses a more opaque panel without blur.
+
 ## Current Architecture
 
 - GTK4/libadwaita UI with a transparent host window and visible launcher panel.
