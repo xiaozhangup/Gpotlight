@@ -1,0 +1,84 @@
+id = "bundled.browser-history"
+name = "Browser History"
+description = "Type h for recent pages, or h followed by words to search titles and URLs"
+command = "browser_history.py"
+args = ["{query}"]
+preserve_order = true
+
+[[config]]
+key = "max_results"
+title = "Maximum results"
+description = "Maximum number of matching pages across all browser profiles"
+type = "integer"
+default = 20
+min = 1
+max = 50
+step = 1
+
+[[config]]
+key = "history_days"
+title = "History age in days"
+description = "Search pages visited within this many days"
+type = "integer"
+default = 30
+min = 1
+max = 3650
+step = 1
+
+[[config]]
+key = "max_history_entries"
+title = "Recent records per profile"
+description = "Scan this many recent records per profile; larger values may take longer"
+type = "integer"
+default = 5000
+min = 100
+max = 50000
+step = 100
+
+[[config]]
+key = "chrome_enabled"
+title = "Google Chrome"
+type = "bool"
+default = true
+
+[[config]]
+key = "chromium_enabled"
+title = "Chromium"
+type = "bool"
+default = true
+
+[[config]]
+key = "edge_enabled"
+title = "Microsoft Edge"
+type = "bool"
+default = true
+
+[[config]]
+key = "brave_enabled"
+title = "Brave"
+type = "bool"
+default = true
+
+[[config]]
+key = "vivaldi_enabled"
+title = "Vivaldi"
+type = "bool"
+default = true
+
+[[config]]
+key = "opera_enabled"
+title = "Opera"
+type = "bool"
+default = true
+
+[[config]]
+key = "firefox_enabled"
+title = "Firefox"
+type = "bool"
+default = true
+
+[[config]]
+key = "zen_enabled"
+title = "Zen Browser"
+type = "bool"
+default = true

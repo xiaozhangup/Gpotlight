@@ -24,13 +24,13 @@ mkdir -p \
   "$RPMBUILD_DIR/TMP"
 
 rm -f \
-  "$RPMBUILD_DIR"/RPMS/*/"$NAME"-*.rpm \
-  "$RPMBUILD_DIR"/SRPMS/"$NAME"-*.src.rpm \
+  "$RPMBUILD_DIR"/RPMS/*/"$NAME-$VERSION"-*.rpm \
+  "$RPMBUILD_DIR"/SRPMS/"$NAME-$VERSION"-*.src.rpm \
   "$RPMBUILD_DIR/SOURCES/$SOURCE_ARCHIVE" \
   "$LOCAL_SPEC"
 
 cd "$ROOT_DIR"
-git ls-files -z | tar --null --files-from=- --transform "s,^,$SOURCE_DIR/," -czf "$RPMBUILD_DIR/SOURCES/$SOURCE_ARCHIVE"
+git ls-files -z --cached --others --exclude-standard | tar --null --files-from=- --transform "s,^,$SOURCE_DIR/," -czf "$RPMBUILD_DIR/SOURCES/$SOURCE_ARCHIVE"
 sed \
   -e "s#^VCS:.*#VCS: local#" \
   -e "s#^Source0:.*#Source0: $SOURCE_ARCHIVE#" \

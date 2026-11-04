@@ -15,6 +15,9 @@ struct DesktopApp {
     name: String,
     comment: String,
     icon: Option<String>,
+    // Normalize once when the desktop database is loaded, not for every keystroke.
+    search_name: String,
+    search_comment: String,
     pinyin: String,
 }
 
@@ -29,6 +32,8 @@ impl AppLauncherPlugin {
                 let comment = app.description().map(|s| s.to_string()).unwrap_or_default();
                 Some(DesktopApp {
                     icon: app_icon_name(&app).or_else(|| desktop_icon_from_file(&id)),
+                    search_name: name.to_lowercase(),
+                    search_comment: comment.to_lowercase(),
                     pinyin: pinyin_search_text(&name),
                     id,
                     name,
@@ -111,8 +116,8 @@ impl SearchPlugin for AppLauncherPlugin {
 
 impl DesktopApp {
     fn matches(&self, needle: &str, pinyin_enabled: bool) -> bool {
-        self.name.to_lowercase().contains(needle)
-            || self.comment.to_lowercase().contains(needle)
+        self.search_name.contains(needle)
+            || self.search_comment.contains(needle)
             || (pinyin_enabled && self.pinyin.contains(needle))
     }
 }
@@ -171,4 +176,98 @@ fn pinyin_search_text(text: &str) -> String {
     }
 
     format!("{} {}", plain.to_lowercase(), initials.to_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn application_search_preserves_unicode_and_optional_pinyin_matches() {
+        let name = "音乐播放器";
+        let comment = "Play MUSIC and Podcasts";
+        let plugin = AppLauncherPlugin {
+            apps: vec![DesktopApp {
+                id: "music.desktop".into(),
+                name: name.into(),
+                comment: comment.into(),
+                icon: None,
+                search_name: name.to_lowercase(),
+                search_comment: comment.to_lowercase(),
+                pinyin: pinyin_search_text(name),
+            }],
+        };
+        let config = PluginConfig::default();
+        let mut app_config = AppConfig::default();
+
+        for query in ["MUSIC", "音乐", "bofang", "bfq"] {
+            assert_eq!(
+                plugin.query_with_config(query, &config, &app_config).len(),
+                1
+            );
+        }
+        app_config.pinyin_search_enabled = false;
+        assert!(plugin
+            .query_with_config("bofang", &config, &app_config)
+            .is_empty());
+        assert_eq!(
+            plugin.query_with_config("音乐", &config, &app_config).len(),
+            1
+        );
+        assert!(plugin
+            .query_with_config("", &config, &app_config)
+            .is_empty());
+    }
+
+    #[test]
+    #[ignore = "timing benchmark; run with --release --ignored --nocapture"]
+    fn benchmark_precomputed_application_search() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let apps: Vec<_> = (0..1_000)
+            .map(|index| {
+                let name = format!("Product {index} 音乐播放器");
+                let comment = format!("Application {index}: Text Editor and Media Tools");
+                DesktopApp {
+                    id: format!("app-{index}.desktop"),
+                    search_name: name.to_lowercase(),
+                    search_comment: comment.to_lowercase(),
+                    pinyin: pinyin_search_text(&name),
+                    name,
+                    comment,
+                    icon: None,
+                }
+            })
+            .collect();
+        let needles = ["product", "editor", "missing", "17", "音乐", "bfq"];
+        let measure = |precomputed: bool| {
+            let start = Instant::now();
+            let mut count = 0;
+            for _ in 0..100 {
+                for needle in needles {
+                    for app in black_box(&apps) {
+                        let matched = if precomputed {
+                            app.matches(black_box(needle), true)
+                        } else {
+                            app.name.to_lowercase().contains(black_box(needle))
+                                || app.comment.to_lowercase().contains(black_box(needle))
+                                || app.pinyin.contains(black_box(needle))
+                        };
+                        count += usize::from(matched);
+                    }
+                }
+            }
+            (black_box(count), start.elapsed())
+        };
+        let (old_count, old_duration) = measure(false);
+        let (new_count, new_duration) = measure(true);
+        assert_eq!(old_count, new_count);
+        eprintln!(
+            "600 searches over 1,000 applications: old {:?}, indexed {:?}, {:.2}x faster",
+            old_duration,
+            new_duration,
+            old_duration.as_secs_f64() / new_duration.as_secs_f64()
+        );
+    }
 }

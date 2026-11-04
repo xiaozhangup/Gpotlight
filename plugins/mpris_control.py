@@ -68,20 +68,22 @@ def player_names(bus: Gio.DBusConnection) -> list[str]:
 
 
 def player_info(bus: Gio.DBusConnection, bus_name: str) -> dict | None:
-    metadata = get_property(bus, bus_name, PLAYER_IFACE, "Metadata")
+    properties = get_properties(bus, bus_name, PLAYER_IFACE)
+    metadata = properties.get("Metadata")
     if not isinstance(metadata, dict):
         return None
 
-    identity = variant_text(get_property(bus, bus_name, ROOT_IFACE, "Identity"))
-    desktop_entry = variant_text(get_property(bus, bus_name, ROOT_IFACE, "DesktopEntry"))
+    root_properties = get_properties(bus, bus_name, ROOT_IFACE)
+    identity = variant_text(root_properties.get("Identity"))
+    desktop_entry = variant_text(root_properties.get("DesktopEntry"))
     label = identity or player_label(bus_name)
     title = variant_text(metadata.get("xesam:title")) or player_label(bus_name)
     artists = variant_strv(metadata.get("xesam:artist"))
     album = variant_text(metadata.get("xesam:album"))
     art_url = variant_text(metadata.get("mpris:artUrl"))
     length_us = variant_int(metadata.get("mpris:length"))
-    position_us = variant_int(get_property(bus, bus_name, PLAYER_IFACE, "Position"))
-    status = variant_text(get_property(bus, bus_name, PLAYER_IFACE, "PlaybackStatus")) or "Stopped"
+    position_us = variant_int(properties.get("Position"))
+    status = variant_text(properties.get("PlaybackStatus")) or "Stopped"
 
     source_icon = desktop_entry_icon(desktop_entry) or desktop_entry or player_icon_name(bus_name)
     return {
@@ -98,21 +100,21 @@ def player_info(bus: Gio.DBusConnection, bus_name: str) -> dict | None:
     }
 
 
-def get_property(bus: Gio.DBusConnection, bus_name: str, interface: str, prop: str):
+def get_properties(bus: Gio.DBusConnection, bus_name: str, interface: str) -> dict:
     try:
         result = bus.call_sync(
             bus_name,
             PLAYER_PATH,
             PROPERTIES_IFACE,
-            "Get",
-            GLib.Variant("(ss)", (interface, prop)),
-            GLib.VariantType.new("(v)"),
+            "GetAll",
+            GLib.Variant("(s)", (interface,)),
+            GLib.VariantType.new("(a{sv})"),
             Gio.DBusCallFlags.NONE,
             1000,
             None,
         )
     except GLib.Error:
-        return None
+        return {}
 
     return result.unpack()[0]
 

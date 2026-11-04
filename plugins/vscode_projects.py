@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -287,6 +288,7 @@ def result_for_project(project: Project) -> dict:
     }
 
 
+@cache
 def vscode_icon_name() -> str:
     for path in desktop_file_paths():
         try:

@@ -6,6 +6,7 @@ import os
 import shlex
 import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from shutil import which
 from xml.etree import ElementTree
@@ -93,8 +94,11 @@ def load_config() -> dict:
 def list_projects() -> list[Project]:
     projects = []
     for ide in IDES:
+        config_dirs = ide_config_dirs(ide)
+        if not config_dirs:
+            continue
         launcher = ide_launcher(ide)
-        for config_dir in ide_config_dirs(ide):
+        for config_dir in config_dirs:
             projects.extend(parse_recent_projects(ide, launcher, config_dir))
     return projects
 
@@ -129,6 +133,7 @@ def launcher_from_desktop_file(ide: Ide) -> Launcher | None:
     return None
 
 
+@cache
 def desktop_files() -> list[Path]:
     data_dirs = [Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))]
     data_dirs.extend(Path(path) for path in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":") if path)
@@ -139,6 +144,7 @@ def desktop_files() -> list[Path]:
     return sorted(files)
 
 
+@cache
 def read_desktop_entry(path: Path) -> dict[str, str]:
     values = {}
     try:

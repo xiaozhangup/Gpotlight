@@ -1,8 +1,7 @@
 use crate::i18n::I18n;
+#[cfg(feature = "tray")]
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
-use std::time::Duration;
 
 pub struct TrayManager {
     #[cfg(feature = "tray")]
@@ -56,18 +55,18 @@ impl TrayManager {
         let title = i18n.t("app_name");
         let open_settings = i18n.t("open_settings");
         let quit = i18n.t("quit");
-        let (sender, receiver) = mpsc::channel::<TrayCommand>();
+        let (sender, receiver) = async_channel::unbounded::<TrayCommand>();
 
         let on_toggle = self.on_toggle.clone();
         let on_settings = self.on_settings.clone();
         let on_quit = self.on_quit.clone();
-        glib::timeout_add_local(Duration::from_millis(100), move || loop {
-            match receiver.try_recv() {
-                Ok(TrayCommand::Toggle) => on_toggle(),
-                Ok(TrayCommand::Settings) => on_settings(),
-                Ok(TrayCommand::Quit) => on_quit(),
-                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+        glib::spawn_future_local(async move {
+            while let Ok(command) = receiver.recv().await {
+                match command {
+                    TrayCommand::Toggle => on_toggle(),
+                    TrayCommand::Settings => on_settings(),
+                    TrayCommand::Quit => on_quit(),
+                }
             }
         });
 
@@ -98,7 +97,7 @@ impl TrayManager {
 #[cfg(feature = "tray")]
 struct TrayService {
     title: String,
-    sender: mpsc::Sender<TrayCommand>,
+    sender: async_channel::Sender<TrayCommand>,
     open_settings: String,
     quit: String,
 }
@@ -129,7 +128,7 @@ impl ksni::Tray for TrayService {
             ksni::menu::StandardItem {
                 label: "Toggle".to_string(),
                 activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayCommand::Toggle);
+                    let _ = this.sender.try_send(TrayCommand::Toggle);
                 }),
                 ..Default::default()
             }
@@ -137,7 +136,7 @@ impl ksni::Tray for TrayService {
             ksni::menu::StandardItem {
                 label: self.open_settings.clone(),
                 activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayCommand::Settings);
+                    let _ = this.sender.try_send(TrayCommand::Settings);
                 }),
                 ..Default::default()
             }
@@ -145,7 +144,7 @@ impl ksni::Tray for TrayService {
             ksni::menu::StandardItem {
                 label: self.quit.clone(),
                 activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayCommand::Quit);
+                    let _ = this.sender.try_send(TrayCommand::Quit);
                 }),
                 ..Default::default()
             }

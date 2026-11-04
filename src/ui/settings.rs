@@ -223,7 +223,7 @@ impl SettingsWindow {
                     let result = {
                         let mut config = config.borrow_mut();
                         config.update(|cfg| {
-                            let plugin = cfg.plugins.entry(id.clone()).or_default();
+                            let plugin = cfg.plugin_config_mut(&id);
                             plugin.enabled = enabled;
                         })
                     };
@@ -250,7 +250,7 @@ impl SettingsWindow {
                     let result = {
                         let mut config = config.borrow_mut();
                         config.update(|cfg| {
-                            let plugin = cfg.plugins.entry(id.clone()).or_default();
+                            let plugin = cfg.plugin_config_mut(&id);
                             plugin.show_in_global_search = enabled;
                         })
                     };
@@ -281,7 +281,7 @@ impl SettingsWindow {
                     let result = {
                         let mut config = config.borrow_mut();
                         config.update(|cfg| {
-                            let plugin = cfg.plugins.entry(id.clone()).or_default();
+                            let plugin = cfg.plugin_config_mut(&id);
                             plugin.trigger_prefix = prefix.clone();
                         })
                     };
@@ -379,7 +379,7 @@ fn custom_config_row(
                 row.connect_active_notify(move |row| {
                     let value = row.is_active();
                     if let Err(err) = config.borrow_mut().update(|cfg| {
-                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        let plugin = cfg.plugin_config_mut(&plugin_id);
                         plugin
                             .custom
                             .insert(key.clone(), toml::Value::Boolean(value));
@@ -419,7 +419,7 @@ fn custom_config_row(
                 entry.connect_changed(move |entry| {
                     let value = entry.text().to_string();
                     if let Err(err) = config.borrow_mut().update(|cfg| {
-                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        let plugin = cfg.plugin_config_mut(&plugin_id);
                         plugin
                             .custom
                             .insert(key.clone(), toml::Value::String(value.clone()));
@@ -469,7 +469,7 @@ fn custom_config_row(
                         return;
                     };
                     if let Err(err) = config.borrow_mut().update(|cfg| {
-                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        let plugin = cfg.plugin_config_mut(&plugin_id);
                         plugin
                             .custom
                             .insert(key.clone(), toml::Value::String(option.value.clone()));
@@ -509,7 +509,7 @@ fn custom_config_row(
                 spin.connect_value_changed(move |spin| {
                     let value = spin.value() as i64;
                     if let Err(err) = config.borrow_mut().update(|cfg| {
-                        let plugin = cfg.plugins.entry(plugin_id.clone()).or_default();
+                        let plugin = cfg.plugin_config_mut(&plugin_id);
                         plugin
                             .custom
                             .insert(key.clone(), toml::Value::Integer(value));

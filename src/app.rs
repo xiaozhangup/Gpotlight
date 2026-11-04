@@ -6,7 +6,6 @@ use crate::tray::TrayManager;
 use crate::ui::{SettingsWindow, SpotlightWindow};
 use adw::prelude::*;
 use anyhow::Result;
-use gio::ApplicationHoldGuard;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,9 +16,6 @@ pub struct GpotlightApp<'a> {
     i18n: Rc<I18n>,
     plugins: Rc<RefCell<PluginRegistry>>,
 }
-
-#[allow(dead_code)]
-struct RuntimeHold(ApplicationHoldGuard);
 
 impl<'a> GpotlightApp<'a> {
     pub fn new(gtk_app: &'a adw::Application) -> Result<Self> {
@@ -40,7 +36,10 @@ impl<'a> GpotlightApp<'a> {
     }
 
     pub fn start(self) -> Result<()> {
-        Box::leak(Box::new(RuntimeHold(self.gtk_app.hold())));
+        let runtime_hold = RefCell::new(Some(self.gtk_app.hold()));
+        self.gtk_app.connect_shutdown(move |_| {
+            runtime_hold.borrow_mut().take();
+        });
 
         let plugins_loaded = Rc::new(Cell::new(false));
         {

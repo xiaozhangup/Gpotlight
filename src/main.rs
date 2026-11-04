@@ -10,6 +10,7 @@ mod ui;
 
 use adw::prelude::*;
 use app::GpotlightApp;
+use std::cell::Cell;
 
 const APP_ID: &str = "io.github.gpotlight.Gpotlight";
 
@@ -34,8 +35,15 @@ fn main() -> glib::ExitCode {
 
     let app = adw::Application::builder().application_id(APP_ID).build();
 
-    app.connect_activate(|gtk_app| {
+    let initialized = Cell::new(false);
+    app.connect_activate(move |gtk_app| {
+        // D-Bus activation can happen more than once in the primary process.
+        // Keep its windows, IPC listener and background services singular.
+        if initialized.replace(true) {
+            return;
+        }
         if let Err(err) = GpotlightApp::new(gtk_app).and_then(|app| app.start()) {
+            initialized.set(false);
             tracing::error!(error = ?err, "failed to start application");
         }
     });

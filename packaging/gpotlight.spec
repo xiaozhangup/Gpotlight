@@ -1,29 +1,29 @@
 %global debug_package %{nil}
 
 Name:           gpotlight
-Version:        0.1.2
+Version:        0.1.6
 Release:        1%{?dist}
 Summary:        Spotlight-style launcher for GNOME
 
 License:        MIT
-URL:            https://github.com/gpotlight/gpotlight
+URL:            https://github.com/xiaozhangup/Gpotlight
 VCS:            {{{ git_repo_vcs }}}
 Source0:        {{{ git_repo_pack }}}
 
 BuildRequires:  cargo
 BuildRequires:  rust
+BuildRequires:  gcc
 BuildRequires:  gtk4-devel >= 4.22
-BuildRequires:  libadwaita-devel
+BuildRequires:  libadwaita-devel >= 1.9
 BuildRequires:  glib2-devel
 BuildRequires:  pkgconf-pkg-config
-BuildRequires:  dbus-devel
-BuildRequires:  openssl-devel
 
 Requires:       gtk4 >= 4.22
-Requires:       libadwaita
+Requires:       libadwaita >= 1.9
 Requires:       glib2
 Requires:       python3
 Requires:       python3-gobject
+Requires:       /usr/bin/setsid
 
 %description
 Gpotlight is a Spotlight-style launcher for GNOME Wayland, built with Rust and GTK4.
@@ -42,12 +42,31 @@ install -dm0755 %{buildroot}%{_datadir}/gpotlight/plugins
 cp -a plugins/. %{buildroot}%{_datadir}/gpotlight/plugins/
 
 %files
+%license LICENSE
+%doc README.md PERFORMANCE.md
 %{_bindir}/gpotlight
 %{_datadir}/applications/io.github.gpotlight.Gpotlight.desktop
 %{_datadir}/icons/hicolor/scalable/apps/io.github.gpotlight.Gpotlight.svg
 %{_datadir}/gpotlight/plugins
 
 %changelog
+* Wed Nov 04 2026 Gpotlight Developers <noreply@example.com> - 0.1.6-1
+- Ship responsive background search and reduced idle resource use.
+- Include browser history search with read-only access to locked browser databases.
+
+* Mon Oct 05 2026 Gpotlight Developers <noreply@example.com> - 0.1.5-1
+- Read history from running browsers with exclusive database locks.
+- Add bounded temporary database/WAL copies while keeping source history read-only.
+
+* Mon Oct 05 2026 Gpotlight Developers <noreply@example.com> - 0.1.4-1
+- Add recent browser history search for Chromium-family browsers, Firefox and Zen.
+- Use the h prefix by default and support read-only multi-profile history queries.
+
+* Mon Oct 05 2026 Gpotlight Developers <noreply@example.com> - 0.1.3-1
+- Keep search responsive with bounded background plugin queries and reusable rows.
+- Remove idle IPC/tray polling and reduce application and bundled plugin search work.
+- Document build requirements and performance validation.
+
 * Tue May 19 2026 Gpotlight Developers <noreply@example.com> - 0.1.2-1
 - Add color preview plugin and require GTK 4.22.
 

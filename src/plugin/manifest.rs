@@ -5,8 +5,15 @@ use super::{
 use crate::config::{AppConfig, PluginConfig};
 use serde::Deserialize;
 use std::fs;
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+const PLUGIN_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_PLUGIN_OUTPUT: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct PluginManifest {
@@ -15,6 +22,8 @@ struct PluginManifest {
     description: String,
     command: String,
     args: Option<Vec<String>>,
+    #[serde(default)]
+    preserve_order: bool,
     config: Option<Vec<PluginManifestConfigItem>>,
 }
 
@@ -147,6 +156,14 @@ impl ExternalCommandPlugin {
 }
 
 impl SearchPlugin for ExternalCommandPlugin {
+    fn preserve_order(&self) -> bool {
+        self.manifest.preserve_order
+    }
+
+    fn is_blocking(&self) -> bool {
+        true
+    }
+
     fn id(&self) -> &str {
         &self.manifest.id
     }
@@ -229,11 +246,13 @@ impl SearchPlugin for ExternalCommandPlugin {
         _app_config: &AppConfig,
     ) -> Vec<SearchResult> {
         let query = query.trim();
-        let output = match Command::new(self.command_path())
-            .args(self.args_for_query(query))
-            .env("GPOTLIGHT_PLUGIN_CONFIG", plugin_config_json(config))
-            .output()
-        {
+        let output = match bounded_output(
+            Command::new(self.command_path())
+                .args(self.args_for_query(query))
+                .env("GPOTLIGHT_PLUGIN_CONFIG", plugin_config_json(config)),
+            PLUGIN_TIMEOUT,
+            MAX_PLUGIN_OUTPUT,
+        ) {
             Ok(output) if output.status.success() => output,
             Ok(output) => {
                 tracing::warn!(
@@ -279,6 +298,116 @@ impl SearchPlugin for ExternalCommandPlugin {
                     .collect(),
             })
             .collect()
+    }
+}
+
+// Own the process until it has been reaped. On timeout, excess output, or a read
+// error, terminate its process group as well: descendants can keep stdout open
+// after the original command exits.
+struct PluginProcess(Option<Child>);
+
+impl Drop for PluginProcess {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            // SAFETY: the command was spawned into a new process group with its
+            // own PID as group ID. A negative PID addresses that group only.
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn bounded_output(
+    command: &mut Command,
+    timeout: Duration,
+    max_output: usize,
+) -> io::Result<Output> {
+    let deadline = Instant::now() + timeout;
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    let mut process = PluginProcess(Some(child));
+    let child = process.0.as_mut().expect("plugin process is running");
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let fd = stdout.as_raw_fd();
+    // SAFETY: stdout owns a valid file descriptor for the entire read loop.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut bytes = Vec::with_capacity(max_output.min(8192));
+    let mut buffer = [0; 8192];
+    let mut eof = false;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "external plugin timed out",
+            ));
+        }
+        if !eof {
+            match stdout.read(&mut buffer) {
+                Ok(0) => eof = true,
+                Ok(count) => {
+                    if count > max_output.saturating_sub(bytes.len()) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "external plugin output exceeded the size limit",
+                        ));
+                    }
+                    bytes.extend_from_slice(&buffer[..count]);
+                    continue;
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(err) => return Err(err),
+            }
+        }
+        if eof {
+            if let Some(status) = child.try_wait()? {
+                process.0.take();
+                return Ok(Output {
+                    status,
+                    stdout: bytes,
+                    stderr: Vec::new(),
+                });
+            }
+        }
+
+        // Wait for pipe activity without allocating reader threads or polling a
+        // quiet plugin continuously. After EOF, briefly wait for the exit status.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let wait = if eof {
+            remaining.min(Duration::from_millis(10))
+        } else {
+            remaining
+        };
+        let mut descriptor = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: descriptor points to a live pollfd, or nfds is zero after EOF.
+        let result = unsafe {
+            libc::poll(
+                &mut descriptor,
+                if eof { 0 } else { 1 },
+                wait.as_millis().max(1).min(i32::MAX as u128) as i32,
+            )
+        };
+        if result == -1 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
     }
 }
 
@@ -330,4 +459,119 @@ fn plugin_manifest_paths() -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_history_process_integrates_with_manifest_actions() {
+        // The child owns an isolated HOME. Never open the user's real history.
+        let script = r#"
+import os, pathlib, runpy, sqlite3, sys, tempfile, time
+with tempfile.TemporaryDirectory() as home:
+    os.environ['HOME'] = home
+    os.environ['XDG_CONFIG_HOME'] = str(pathlib.Path(home) / '.config')
+    profile = pathlib.Path(home) / '.zen' / 'fixture'
+    profile.mkdir(parents=True)
+    connection = sqlite3.connect(profile / 'places.sqlite')
+    connection.executescript('CREATE TABLE moz_places(url TEXT, title TEXT, last_visit_date INTEGER, hidden INTEGER); CREATE INDEX recent ON moz_places(last_visit_date);')
+    connection.execute('INSERT INTO moz_places VALUES (?, ?, ?, 0)', ('https://example.test/docs', 'Fixture Docs', int(time.time() * 1000000) - 1000000))
+    connection.commit()
+    connection.close()
+    plugin_path = sys.argv[2]
+    sys.argv = [plugin_path, sys.argv[1]]
+    runpy.run_path(plugin_path, run_name='__main__')
+"#;
+        let mut plugin = ExternalCommandPlugin::from_manifest(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/browser-history.toml"),
+        )
+        .unwrap();
+        assert!(plugin.preserve_order());
+        plugin.manifest.command = "python3".into();
+        plugin.manifest.args = Some(vec![
+            "-c".into(),
+            script.into(),
+            "{query}".into(),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("plugins/browser_history.py")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+        let results = plugin.query("docs");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Fixture Docs");
+        assert!(results[0].subtitle.contains("Zen"));
+        assert_eq!(
+            results[0].action,
+            PluginAction::OpenUri("https://example.test/docs".into())
+        );
+        assert_eq!(
+            results[0].buttons[0].action,
+            PluginAction::CopyText("https://example.test/docs".into())
+        );
+        assert!(plugin.query("missing").is_empty());
+    }
+
+    fn shell(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[test]
+    fn captures_stdout_with_closed_stdin_and_discarded_stderr() {
+        let output = bounded_output(
+            &mut shell("read line || printf 'stdin closed\\n'; printf 'ignored' >&2"),
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"stdin closed\n");
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn preserves_unsuccessful_exit_status() {
+        let output = bounded_output(&mut shell("exit 7"), Duration::from_secs(2), 1024).unwrap();
+        assert_eq!(output.status.code(), Some(7));
+    }
+
+    #[test]
+    fn stops_a_hung_plugin() {
+        let start = Instant::now();
+        let error = bounded_output(&mut shell("exec sleep 5"), Duration::from_millis(50), 1024)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn stops_descendants_that_keep_stdout_open() {
+        let start = Instant::now();
+        let error = bounded_output(
+            &mut shell("sleep 5 & printf 'parent finished'"),
+            Duration::from_millis(50),
+            1024,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn rejects_unbounded_output() {
+        let error = bounded_output(&mut shell("exec yes output"), Duration::from_secs(2), 1024)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn allows_output_exactly_at_the_limit() {
+        let output =
+            bounded_output(&mut shell("printf '1234'"), Duration::from_secs(2), 4).unwrap();
+        assert_eq!(output.stdout, b"1234");
+    }
 }

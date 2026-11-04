@@ -3,6 +3,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -66,6 +67,58 @@ impl Default for AppConfig {
     }
 }
 
+impl AppConfig {
+    pub fn plugin_config(&self, id: &str) -> &PluginConfig {
+        self.plugins
+            .get(id)
+            .unwrap_or_else(|| PluginConfig::defaults_for(id))
+    }
+
+    pub fn plugin_config_mut(&mut self, id: &str) -> &mut PluginConfig {
+        self.plugins
+            .entry(id.to_string())
+            .or_insert_with(|| PluginConfig::defaults_for(id).clone())
+    }
+}
+
+impl PluginConfig {
+    fn defaults_for(id: &str) -> &'static Self {
+        static STANDARD: LazyLock<PluginConfig> = LazyLock::new(PluginConfig::default);
+        static BROWSER_HISTORY: LazyLock<PluginConfig> = LazyLock::new(|| PluginConfig {
+            show_in_global_search: false,
+            trigger_prefix: "h".into(),
+            ..PluginConfig::default()
+        });
+        match id {
+            "bundled.browser-history" => &BROWSER_HISTORY,
+            _ => &STANDARD,
+        }
+    }
+
+    pub fn prefixed_query<'a>(&self, query: &'a str) -> Option<&'a str> {
+        if !self.enabled {
+            return None;
+        }
+        let prefix = self.trigger_prefix.trim();
+        if prefix.is_empty() {
+            return None;
+        }
+        let rest = query.strip_prefix(prefix)?;
+        // Word prefixes such as "h" require a boundary, so "hello"
+        // remains an ordinary search. Symbolic prefixes keep /query.
+        let word_prefix = prefix.chars().last().is_some_and(char::is_alphanumeric);
+        (!word_prefix || rest.is_empty() || rest.starts_with(char::is_whitespace))
+            .then(|| rest.trim_start())
+    }
+
+    pub fn query<'a>(&self, query: &'a str) -> Option<&'a str> {
+        self.prefixed_query(query).or_else(|| {
+            (self.enabled && self.show_in_global_search && !query.trim().is_empty())
+                .then_some(query)
+        })
+    }
+}
+
 fn default_max_visible_results() -> i32 {
     6
 }
@@ -126,31 +179,11 @@ impl ConfigStore {
     }
 
     pub fn plugin_config(&self, id: &str) -> PluginConfig {
-        self.config.plugins.get(id).cloned().unwrap_or_default()
+        self.config.plugin_config(id).clone()
     }
 
     pub fn plugin_query<'a>(&self, id: &str, query: &'a str) -> Option<&'a str> {
-        let plugin = self.plugin_config(id);
-        if !plugin.enabled {
-            return None;
-        }
-
-        let prefix = plugin.trigger_prefix.trim();
-        if !prefix.is_empty() {
-            if let Some(prefixed_query) = query.strip_prefix(prefix) {
-                return Some(prefixed_query.trim_start());
-            }
-        }
-
-        if plugin.show_in_global_search {
-            return (!query.trim().is_empty()).then_some(query);
-        }
-
-        None
-    }
-
-    pub fn usage_count(&self, key: &str) -> u32 {
-        self.config.usage.get(key).copied().unwrap_or(0)
+        self.config.plugin_config(id).query(query)
     }
 
     pub fn record_usage(&mut self, key: &str) -> Result<()> {
@@ -198,6 +231,44 @@ fn config_path() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_history_defaults_to_a_delimited_h_prefix() {
+        let store = ConfigStore::from_config_for_test(AppConfig::default());
+        let id = "bundled.browser-history";
+        let config = store.plugin_config(id);
+        assert!(config.enabled);
+        assert!(!config.show_in_global_search);
+        assert_eq!(config.trigger_prefix, "h");
+        for query in ["", "   ", "hello", "history", "https://example.com"] {
+            assert_eq!(store.plugin_query(id, query), None);
+        }
+        assert_eq!(store.plugin_query(id, "h"), Some(""));
+        assert_eq!(store.plugin_query(id, "h rust"), Some("rust"));
+        assert_eq!(store.plugin_query(id, "h\t浏览器"), Some("浏览器"));
+    }
+
+    #[test]
+    fn changing_history_settings_preserves_defaults_and_explicit_overrides() {
+        let id = "bundled.browser-history";
+        let mut config = AppConfig::default();
+        config
+            .plugin_config_mut(id)
+            .custom
+            .insert("history_days".into(), toml::Value::Integer(7));
+        assert!(!config.plugin_config(id).show_in_global_search);
+        assert_eq!(config.plugin_config(id).trigger_prefix, "h");
+        config.plugin_config_mut(id).show_in_global_search = true;
+        config.plugin_config_mut(id).trigger_prefix = "!".into();
+        let reloaded: AppConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        let store = ConfigStore::from_config_for_test(reloaded);
+        assert_eq!(store.plugin_query(id, "!docs"), Some("docs"));
+        assert_eq!(store.plugin_query(id, "hello"), Some("hello"));
+        assert_eq!(
+            store.plugin_config(id).custom["history_days"].as_integer(),
+            Some(7)
+        );
+    }
 
     fn store_with_plugin(id: &str, plugin: PluginConfig) -> ConfigStore {
         let mut config = AppConfig::default();

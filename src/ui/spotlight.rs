@@ -5,10 +5,20 @@ use crate::plugin::{
 };
 use crate::theme;
 use gtk::prelude::*;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+struct RefreshTimer {
+    source: glib::SourceId,
+    deadline: Instant,
+}
+
+struct RenderedRow {
+    row: gtk::ListBoxRow,
+    result: Rc<RefCell<SearchResult>>,
+}
 
 pub struct SpotlightWindow {
     window: gtk::Window,
@@ -16,11 +26,17 @@ pub struct SpotlightWindow {
     panel: gtk::Box,
     results_view: gtk::Overlay,
     list: gtk::ListBox,
+    rows: Rc<RefCell<Vec<RenderedRow>>>,
     scroll_indicator: gtk::DrawingArea,
     results: Rc<RefCell<Vec<SearchResult>>>,
     result_offset: Rc<RefCell<usize>>,
     selected_index: Rc<RefCell<usize>>,
-    refresh_tickets: Rc<RefCell<HashMap<String, u64>>>,
+    refresh_sources: Rc<RefCell<HashMap<String, RefreshTimer>>>,
+    search_delay: Rc<RefCell<Option<glib::SourceId>>>,
+    generation: Rc<Cell<u64>>,
+    search_pending: Rc<Cell<bool>>,
+    refresh_pending: Rc<RefCell<HashSet<String>>>,
+    worker_running: Rc<Cell<bool>>,
     config: Rc<RefCell<ConfigStore>>,
     plugins: SharedRegistry,
     ensure_plugins_loaded: Rc<dyn Fn()>,
@@ -66,7 +82,7 @@ impl SpotlightWindow {
         let results = Rc::new(RefCell::new(Vec::new()));
         let result_offset = Rc::new(RefCell::new(0));
         let selected_index = Rc::new(RefCell::new(0));
-        let refresh_tickets = Rc::new(RefCell::new(HashMap::new()));
+        let refresh_sources = Rc::new(RefCell::new(HashMap::new()));
 
         let list = gtk::ListBox::new();
         list.add_css_class("spotlight-results");
@@ -116,11 +132,17 @@ impl SpotlightWindow {
             panel,
             results_view,
             list,
+            rows: Rc::new(RefCell::new(Vec::new())),
             scroll_indicator,
             results,
             result_offset,
             selected_index,
-            refresh_tickets,
+            refresh_sources,
+            search_delay: Rc::new(RefCell::new(None)),
+            generation: Rc::new(Cell::new(0)),
+            search_pending: Rc::new(Cell::new(false)),
+            refresh_pending: Rc::new(RefCell::new(HashSet::new())),
+            worker_running: Rc::new(Cell::new(false)),
             config,
             plugins,
             ensure_plugins_loaded,
@@ -136,23 +158,27 @@ impl SpotlightWindow {
     pub fn toggle(&self) {
         if self.window.is_visible() {
             self.window.set_visible(false);
-            self.refresh_tickets.borrow_mut().clear();
+            self.cancel_pending_work();
         } else {
             self.present();
         }
     }
 
     pub fn present(&self) {
-        self.refresh_tickets.borrow_mut().clear();
+        self.cancel_pending_work();
         self.entry.set_text("");
+        self.results.borrow_mut().clear();
+        self.render_results(&[], 0, 0, 0);
         // Present the window immediately so it appears without delay, then load
         // search results on the next event-loop iteration.
         self.window.present();
         self.entry.grab_focus();
         let spotlight = self.clone_handles();
         glib::idle_add_local_once(move || {
-            (spotlight.ensure_plugins_loaded)();
-            spotlight.refresh_results("");
+            if spotlight.window.is_visible() {
+                (spotlight.ensure_plugins_loaded)();
+                spotlight.refresh_results(&spotlight.entry.text());
+            }
         });
     }
 
@@ -183,9 +209,19 @@ impl SpotlightWindow {
 
     fn connect_signals(&self) {
         let spotlight = self.clone_handles();
-        self.entry.connect_search_changed(move |entry| {
-            let query = entry.text().to_string();
-            spotlight.refresh_results(&query);
+        // Built-in results are cheap and should follow every keystroke. Only
+        // external commands are debounced, independently of GTK's search delay.
+        self.entry.connect_changed(move |entry| {
+            if spotlight.window.is_visible() {
+                spotlight.refresh_results(&entry.text());
+            }
+        });
+
+        let spotlight = self.clone_handles();
+        self.window.connect_visible_notify(move |window| {
+            if !window.is_visible() {
+                spotlight.cancel_pending_work();
+            }
         });
 
         let results = self.results.clone();
@@ -343,17 +379,154 @@ impl SpotlightWindow {
         });
     }
 
+    fn cancel_refreshes(&self) {
+        for (_, timer) in self.refresh_sources.borrow_mut().drain() {
+            timer.source.remove();
+        }
+        self.refresh_pending.borrow_mut().clear();
+    }
+
+    fn cancel_pending_work(&self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
+        if let Some(source) = self.search_delay.borrow_mut().take() {
+            source.remove();
+        }
+        self.search_pending.set(false);
+        self.cancel_refreshes();
+    }
+
     fn refresh_results(&self, query: &str) {
-        let found = self.plugins.borrow().search(&self.config.borrow(), query);
-        *self.result_offset.borrow_mut() = 0;
-        *self.selected_index.borrow_mut() = 0;
-        self.render_results(
-            &found,
-            0,
-            0,
-            self.config.borrow().current().window.max_visible_results,
-        );
+        self.cancel_pending_work();
+        (self.ensure_plugins_loaded)();
+        let found = {
+            let config = self.config.borrow();
+            let plugins = self.plugins.borrow();
+            plugins.rank_results(
+                config.current(),
+                plugins.search_immediate(config.current(), query),
+            )
+        };
+        self.apply_results(found, false);
+
+        let spotlight = self.clone_handles();
+        let source = glib::timeout_add_local_once(Duration::from_millis(60), move || {
+            spotlight.search_delay.borrow_mut().take();
+            spotlight.search_pending.set(true);
+            spotlight.start_worker();
+        });
+        *self.search_delay.borrow_mut() = Some(source);
+    }
+
+    fn apply_results(&self, found: Vec<SearchResult>, preserve_selection: bool) {
+        let selected_key = preserve_selection
+            .then(|| {
+                self.results
+                    .borrow()
+                    .get(*self.selected_index.borrow())
+                    .map(SearchResult::usage_key)
+            })
+            .flatten();
+        let selected = selected_key
+            .and_then(|key| found.iter().position(|result| result.usage_key() == key))
+            .unwrap_or(0);
+        let max_visible = self.config.borrow().current().window.max_visible_results;
+        let visible = visible_result_count(found.len(), max_visible);
+        let offset = if preserve_selection && visible > 0 {
+            offset_for_selection(
+                (*self.result_offset.borrow()).min(found.len().saturating_sub(visible)),
+                selected,
+                visible,
+            )
+        } else {
+            0
+        };
+        *self.result_offset.borrow_mut() = offset;
+        *self.selected_index.borrow_mut() = selected;
         *self.results.borrow_mut() = found;
+        self.render_results(&self.results.borrow(), offset, selected, max_visible);
+    }
+
+    fn start_worker(&self) {
+        if self.worker_running.replace(true) {
+            return;
+        }
+        let spotlight = self.clone_handles();
+        glib::spawn_future_local(async move {
+            loop {
+                if !spotlight.window.is_visible() {
+                    break;
+                }
+                let plugin_id = if spotlight.search_pending.replace(false) {
+                    spotlight.refresh_pending.borrow_mut().clear();
+                    None
+                } else {
+                    let next = spotlight.refresh_pending.borrow().iter().next().cloned();
+                    let Some(id) = next else { break };
+                    spotlight.refresh_pending.borrow_mut().remove(&id);
+                    Some(id)
+                };
+                let generation = spotlight.generation.get();
+                let query = spotlight.entry.text().to_string();
+                let config = spotlight.config.borrow().current().clone();
+                let registry = spotlight.plugins.borrow().clone();
+                let refresh_id = plugin_id.clone();
+                let refresh_query = plugin_id.as_ref().and_then(|id| {
+                    spotlight
+                        .config
+                        .borrow()
+                        .plugin_query(id, &query)
+                        .or_else(|| query.trim().is_empty().then_some(""))
+                        .map(str::to_owned)
+                });
+                // At most one query batch is active. New input replaces pending
+                // work; the GTK loop never waits for child processes or joins.
+                let found = gio::spawn_blocking(move || {
+                    if let Some(id) = refresh_id {
+                        refresh_query
+                            .map(|query| registry.search_plugin_with_config(&config, &id, &query))
+                            .unwrap_or_default()
+                    } else {
+                        registry.search_blocking(&config, &query)
+                    }
+                })
+                .await;
+                if generation != spotlight.generation.get() || !spotlight.window.is_visible() {
+                    continue;
+                }
+                let found = match found {
+                    Ok(found) => found,
+                    Err(_) => {
+                        tracing::warn!("background plugin search panicked");
+                        Vec::new()
+                    }
+                };
+                let mut merged = if let Some(id) = plugin_id {
+                    spotlight
+                        .results
+                        .borrow()
+                        .iter()
+                        .filter(|result| result.source_plugin_id.as_deref() != Some(id.as_str()))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    spotlight.plugins.borrow().search_immediate(
+                        spotlight.config.borrow().current(),
+                        &spotlight.entry.text(),
+                    )
+                };
+                merged.extend(
+                    found.into_iter().filter(|result| {
+                        !spotlight.entry.text().trim().is_empty() || result.pinned
+                    }),
+                );
+                let merged = spotlight
+                    .plugins
+                    .borrow()
+                    .rank_results(spotlight.config.borrow().current(), merged);
+                spotlight.apply_results(merged, true);
+            }
+            spotlight.worker_running.set(false);
+        });
     }
 
     fn render_results(
@@ -363,14 +536,57 @@ impl SpotlightWindow {
         selected_index: usize,
         max_visible_results: i32,
     ) {
-        while let Some(row) = self.list.first_child() {
-            self.list.remove(&row);
-        }
-
         let visible_count = visible_result_count(results.len(), max_visible_results);
-        for result in results.iter().skip(offset).take(visible_count) {
-            self.list
-                .append(&result_row(result, &self.window, &self.config, self));
+        let mut rows = self.rows.borrow_mut();
+        while rows.len() > visible_count {
+            if let Some(row) = rows.pop() {
+                self.list.remove(&row.row);
+            }
+        }
+        for (index, result) in results.iter().skip(offset).take(visible_count).enumerate() {
+            if let Some(rendered) = rows.get(index) {
+                let previous = rendered.result.replace(result.clone());
+                if previous != *result
+                    && !update_result_row_content(&rendered.row, result, &previous)
+                {
+                    rendered.row.set_child(Some(&result_row_content(
+                        &rendered.result,
+                        &self.window,
+                        &self.config,
+                        self,
+                    )));
+                }
+            } else {
+                let binding = Rc::new(RefCell::new(result.clone()));
+                let row = result_row(&binding, &self.window, &self.config, self);
+                self.list.append(&row);
+                rows.push(RenderedRow {
+                    row,
+                    result: binding,
+                });
+            }
+        }
+        drop(rows);
+        // Stop refreshes for plugins scrolled out of view.
+        let visible_plugins: HashSet<_> = results
+            .iter()
+            .skip(offset)
+            .take(visible_count)
+            .filter(|result| result.refresh_interval_ms.is_some())
+            .filter_map(|result| result.source_plugin_id.as_deref())
+            .collect();
+        let hidden: Vec<_> = self
+            .refresh_sources
+            .borrow()
+            .keys()
+            .filter(|id| !visible_plugins.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in hidden {
+            if let Some(timer) = self.refresh_sources.borrow_mut().remove(&id) {
+                timer.source.remove();
+            }
+            self.refresh_pending.borrow_mut().remove(&id);
         }
         let has_results = visible_count > 0;
         self.list.set_visible(has_results);
@@ -378,10 +594,21 @@ impl SpotlightWindow {
         update_selection(&self.list, offset, selected_index);
         update_scroll_indicator(&self.scroll_indicator, results.len(), visible_count);
 
+        let mut refreshes: HashMap<&str, (&SearchResult, u64)> = HashMap::new();
         for result in results.iter().skip(offset).take(visible_count) {
-            if let Some(interval) = result.refresh_interval_ms {
-                self.refresh_result_after(result, Duration::from_millis(interval), false);
+            if let (Some(id), Some(interval), Some(_)) = (
+                &result.source_plugin_id,
+                result.refresh_interval_ms,
+                &result.refresh_key,
+            ) {
+                refreshes
+                    .entry(id.as_str())
+                    .and_modify(|(_, shortest)| *shortest = (*shortest).min(interval))
+                    .or_insert((result, interval));
             }
+        }
+        for (result, interval) in refreshes.into_values() {
+            self.refresh_result_after(result, Duration::from_millis(interval), false);
         }
     }
 
@@ -389,93 +616,36 @@ impl SpotlightWindow {
         let Some(plugin_id) = result.source_plugin_id.clone() else {
             return;
         };
-        let Some(refresh_key) = result.refresh_key.clone() else {
+        if result.refresh_key.is_none() || !self.window.is_visible() {
             return;
-        };
-        let ticket_key = format!("{plugin_id}:{refresh_key}");
-        let ticket = {
-            let mut tickets = self.refresh_tickets.borrow_mut();
-            if !replace_pending && tickets.contains_key(&ticket_key) {
-                return;
-            }
-            let ticket = tickets.entry(ticket_key.clone()).or_insert(0);
-            *ticket = ticket.saturating_add(1);
-            *ticket
-        };
-
-        let spotlight = self.clone_handles();
-        glib::timeout_add_local_once(delay, move || {
-            if !spotlight.window.is_visible() {
-                if spotlight.refresh_tickets.borrow().get(&ticket_key) == Some(&ticket) {
-                    spotlight.refresh_tickets.borrow_mut().remove(&ticket_key);
-                }
-                return;
-            }
-            if spotlight.refresh_tickets.borrow().get(&ticket_key) != Some(&ticket) {
-                return;
-            }
-            spotlight.refresh_tickets.borrow_mut().remove(&ticket_key);
-            spotlight.refresh_result(&plugin_id, &refresh_key);
-        });
-    }
-
-    fn refresh_result(&self, plugin_id: &str, refresh_key: &str) {
-        let query = self.entry.text().to_string();
-        let plugin_query = {
-            let config = self.config.borrow();
-            config
-                .plugin_query(plugin_id, &query)
-                .map(str::to_string)
-                .or_else(|| query.trim().is_empty().then(String::new))
-        };
-        let Some(plugin_query) = plugin_query else {
-            return;
-        };
-
-        let replacements =
-            self.plugins
-                .borrow()
-                .search_plugin(&self.config.borrow(), plugin_id, &plugin_query);
-        let Some(replacement) = replacements
-            .into_iter()
-            .find(|result| result.refresh_key.as_deref() == Some(refresh_key))
-        else {
-            return;
-        };
-
-        let mut results = self.results.borrow_mut();
-        let Some(index) = results.iter().position(|result| {
-            result.source_plugin_id.as_deref() == Some(plugin_id)
-                && result.refresh_key.as_deref() == Some(refresh_key)
-        }) else {
-            return;
-        };
-        results[index] = replacement;
-        let result = results[index].clone();
-        drop(results);
-
-        let offset = *self.result_offset.borrow();
-        let visible_count = visible_result_count(
-            self.results.borrow().len(),
-            self.config.borrow().current().window.max_visible_results,
+        }
+        // All visible rows from one plugin share one query and one timer.
+        let delay = delay.clamp(
+            Duration::from_millis(100),
+            Duration::from_millis(u32::MAX as u64),
         );
-        if index < offset || index >= offset + visible_count {
-            return;
+        let deadline = Instant::now() + delay;
+        let pending_timer = self.refresh_sources.borrow_mut().remove(&plugin_id);
+        if let Some(timer) = pending_timer {
+            if !replace_pending && timer.deadline <= deadline {
+                self.refresh_sources.borrow_mut().insert(plugin_id, timer);
+                return;
+            }
+            timer.source.remove();
         }
-        let Some(row) = self.list.row_at_index((index - offset) as i32) else {
-            return;
-        };
-        if !update_result_row_content(&row, &result) {
-            row.set_child(Some(&result_row_content(
-                &result,
-                &self.window,
-                &self.config,
-                self,
-            )));
-        }
-        if let Some(interval) = result.refresh_interval_ms {
-            self.refresh_result_after(&result, Duration::from_millis(interval), false);
-        }
+        let spotlight = self.clone_handles();
+        let id = plugin_id.clone();
+        let source =
+            glib::timeout_add_local_once(delay.max(Duration::from_millis(100)), move || {
+                spotlight.refresh_sources.borrow_mut().remove(&id);
+                if spotlight.window.is_visible() {
+                    spotlight.refresh_pending.borrow_mut().insert(id);
+                    spotlight.start_worker();
+                }
+            });
+        self.refresh_sources
+            .borrow_mut()
+            .insert(plugin_id, RefreshTimer { source, deadline });
     }
 
     fn clone_handles(&self) -> Self {
@@ -485,11 +655,17 @@ impl SpotlightWindow {
             panel: self.panel.clone(),
             results_view: self.results_view.clone(),
             list: self.list.clone(),
+            rows: self.rows.clone(),
             scroll_indicator: self.scroll_indicator.clone(),
             results: self.results.clone(),
             result_offset: self.result_offset.clone(),
             selected_index: self.selected_index.clone(),
-            refresh_tickets: self.refresh_tickets.clone(),
+            refresh_sources: self.refresh_sources.clone(),
+            search_delay: self.search_delay.clone(),
+            generation: self.generation.clone(),
+            search_pending: self.search_pending.clone(),
+            refresh_pending: self.refresh_pending.clone(),
+            worker_running: self.worker_running.clone(),
             config: self.config.clone(),
             plugins: self.plugins.clone(),
             ensure_plugins_loaded: self.ensure_plugins_loaded.clone(),
@@ -630,7 +806,7 @@ fn rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, width: f64, height: f6
 }
 
 fn result_row(
-    result: &SearchResult,
+    result: &Rc<RefCell<SearchResult>>,
     window: &gtk::Window,
     config: &Rc<RefCell<ConfigStore>>,
     spotlight: &SpotlightWindow,
@@ -643,11 +819,12 @@ fn result_row(
 }
 
 fn result_row_content(
-    result: &SearchResult,
+    binding: &Rc<RefCell<SearchResult>>,
     window: &gtk::Window,
     config: &Rc<RefCell<ConfigStore>>,
     spotlight: &SpotlightWindow,
 ) -> gtk::Box {
+    let result = binding.borrow();
     let outer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     outer.add_css_class("result-row");
     outer.set_hexpand(true);
@@ -702,15 +879,18 @@ fn result_row_content(
         buttons.set_halign(gtk::Align::End);
         buttons.set_valign(gtk::Align::Center);
         buttons.set_width_request(result_buttons_width(result.buttons.len()));
-        for button in &result.buttons {
+        for (index, button) in result.buttons.iter().enumerate() {
             let action_button = result_action_button(button);
-            let result = result.clone();
-            let button = button.clone();
+            let binding = binding.clone();
             let window = window.clone();
             let config = config.clone();
             let spotlight = spotlight.clone_handles();
             action_button.connect_clicked(move |_| {
-                activate_button_with_usage(&result, &button, window.upcast_ref(), &config);
+                let result = binding.borrow().clone();
+                let Some(button) = result.buttons.get(index) else {
+                    return;
+                };
+                activate_button_with_usage(&result, button, window.upcast_ref(), &config);
                 if let Some(refresh_after_ms) = button.refresh_after_ms {
                     spotlight.refresh_result_after(
                         &result,
@@ -756,7 +936,11 @@ fn result_buttons_width(button_count: usize) -> i32 {
     }
 }
 
-fn update_result_row_content(row: &gtk::ListBoxRow, result: &SearchResult) -> bool {
+fn update_result_row_content(
+    row: &gtk::ListBoxRow,
+    result: &SearchResult,
+    previous: &SearchResult,
+) -> bool {
     let Some(outer) = row
         .child()
         .and_then(|child| child.downcast::<gtk::Box>().ok())
@@ -777,13 +961,15 @@ fn update_result_row_content(row: &gtk::ListBoxRow, result: &SearchResult) -> bo
         .and_then(|child| child.downcast::<gtk::Box>().ok())
         .filter(|buttons| buttons.has_css_class("result-buttons"))
     {
-        if !update_result_buttons(&buttons, &result.buttons) {
+        if result.buttons != previous.buttons && !update_result_buttons(&buttons, &result.buttons) {
             return false;
         }
     }
 
-    if let Some(image) = find_named_child::<gtk::Image>(&outer, "result-icon") {
-        set_image_icon(&image, result.icon.as_deref(), 32);
+    if result.icon != previous.icon {
+        if let Some(image) = find_named_child::<gtk::Image>(&outer, "result-icon") {
+            set_image_icon(&image, result.icon.as_deref(), 32);
+        }
     }
     if let Some(title) = find_named_child::<gtk::Label>(&outer, "result-title") {
         title.set_text(&result.title);
@@ -994,5 +1180,175 @@ fn install_css() {
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::plugin::{PluginAction, PluginRegistry, SearchPlugin};
+    use std::sync::{Arc, Mutex};
+
+    struct TestPlugin {
+        blocking: bool,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SearchPlugin for TestPlugin {
+        fn id(&self) -> &str {
+            if self.blocking {
+                "slow"
+            } else {
+                "fast"
+            }
+        }
+        fn name(&self) -> &str {
+            self.id()
+        }
+        fn description(&self) -> &str {
+            self.id()
+        }
+        fn is_blocking(&self) -> bool {
+            self.blocking
+        }
+        fn query(&self, query: &str) -> Vec<SearchResult> {
+            self.calls.lock().unwrap().push(query.to_string());
+            if self.blocking {
+                std::thread::sleep(Duration::from_millis(180));
+            }
+            let result = SearchResult {
+                title: format!("{}:{query}", self.id()),
+                subtitle: String::new(),
+                icon: None,
+                pinned: true,
+                action: PluginAction::CopyText(format!("{}:{query}", self.id())),
+                buttons: Vec::new(),
+                refresh_key: self.blocking.then(|| "live".to_owned()),
+                refresh_interval_ms: None,
+                source_plugin_id: None,
+            };
+            let mut results = vec![result.clone()];
+            if self.blocking {
+                let mut unpinned = result;
+                unpinned.pinned = false;
+                unpinned.title = format!("unpinned:{query}");
+                unpinned.refresh_key = None;
+                results.push(unpinned);
+            }
+            results
+        }
+    }
+
+    async fn wait_until(mut ready: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "UI work did not complete"
+            );
+            glib::timeout_future(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a display; run with xvfb-run and --test-threads=1"]
+    fn async_search_keeps_ui_responsive_and_discards_stale_results() {
+        gtk::init().unwrap();
+        let app = gtk::Application::builder()
+            .application_id("io.github.gpotlight.Test")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = PluginRegistry::default();
+        registry.register(TestPlugin {
+            blocking: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        registry.register(TestPlugin {
+            blocking: true,
+            calls: calls.clone(),
+        });
+        let spotlight = SpotlightWindow::new(
+            &app,
+            Rc::new(I18n::load("en-US")),
+            Rc::new(RefCell::new(ConfigStore::from_config_for_test(
+                AppConfig::default(),
+            ))),
+            Rc::new(RefCell::new(registry)),
+            Rc::new(|| {}),
+        );
+        glib::MainContext::default().block_on(async {
+            spotlight.present();
+            wait_until(|| !calls.lock().unwrap().is_empty()).await;
+            // Change input repeatedly while the previous subprocess is busy.
+            spotlight.entry.set_text("old");
+            spotlight.entry.set_text("new");
+            assert_eq!(spotlight.results.borrow()[0].title, "fast:new");
+            let immediate_row = spotlight.list.row_at_index(0).unwrap();
+            let ticks = Rc::new(Cell::new(0));
+            let counter = ticks.clone();
+            let timer = glib::timeout_add_local(Duration::from_millis(10), move || {
+                counter.set(counter.get() + 1);
+                glib::ControlFlow::Continue
+            });
+            wait_until(|| {
+                spotlight
+                    .results
+                    .borrow()
+                    .iter()
+                    .any(|r| r.title == "slow:new")
+            })
+            .await;
+            timer.remove();
+            assert!(ticks.get() >= 5, "slow plugins blocked GTK timers");
+            assert!(spotlight
+                .results
+                .borrow()
+                .iter()
+                .all(|r| r.title.ends_with(":new")));
+            assert!(!calls.lock().unwrap().iter().any(|query| query == "old"));
+            assert_eq!(
+                spotlight.list.row_at_index(0).unwrap(),
+                immediate_row,
+                "unchanged rows should be reused"
+            );
+
+            // A single-plugin refresh must keep the empty-query pinned filter.
+            spotlight.entry.set_text("");
+            wait_until(|| {
+                spotlight
+                    .results
+                    .borrow()
+                    .iter()
+                    .any(|r| r.title == "slow:")
+            })
+            .await;
+            let refreshable = spotlight.results.borrow()[1].clone();
+            let before = calls.lock().unwrap().len();
+            spotlight.refresh_result_after(&refreshable, Duration::from_millis(100), false);
+            wait_until(|| calls.lock().unwrap().len() > before).await;
+            wait_until(|| !spotlight.worker_running.get()).await;
+            assert!(spotlight.results.borrow().iter().all(|r| r.pinned));
+
+            // Refreshes are grouped by plugin and removed as soon as we hide.
+            let mut refreshable = spotlight.results.borrow()[1].clone();
+            refreshable.refresh_key = Some("one".into());
+            spotlight.refresh_result_after(&refreshable, Duration::from_secs(1), false);
+            refreshable.refresh_key = Some("two".into());
+            spotlight.refresh_result_after(&refreshable, Duration::from_secs(1), false);
+            assert_eq!(spotlight.refresh_sources.borrow().len(), 1);
+            let previous_deadline = spotlight.refresh_sources.borrow()["slow"].deadline;
+            spotlight.refresh_result_after(&refreshable, Duration::from_millis(100), false);
+            assert!(
+                spotlight.refresh_sources.borrow()["slow"].deadline < previous_deadline,
+                "rows sharing a plugin must use the shortest refresh interval"
+            );
+            spotlight.window.set_visible(false);
+            assert!(spotlight.refresh_sources.borrow().is_empty());
+            assert!(spotlight.search_delay.borrow().is_none());
+        });
+        spotlight.window.destroy();
     }
 }
