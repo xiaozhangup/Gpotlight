@@ -3,6 +3,7 @@ use super::{
     SearchPlugin, SearchResult, SearchResultButton,
 };
 use crate::config::{AppConfig, PluginConfig};
+use gio::prelude::*;
 use serde::Deserialize;
 use std::fs;
 use std::io::{self, Read};
@@ -243,15 +244,26 @@ impl SearchPlugin for ExternalCommandPlugin {
         &self,
         query: &str,
         config: &PluginConfig,
+        app_config: &AppConfig,
+    ) -> Vec<SearchResult> {
+        self.query_cancellable(query, config, app_config, &gio::Cancellable::new())
+    }
+
+    fn query_cancellable(
+        &self,
+        query: &str,
+        config: &PluginConfig,
         _app_config: &AppConfig,
+        cancellable: &gio::Cancellable,
     ) -> Vec<SearchResult> {
         let query = query.trim();
-        let output = match bounded_output(
+        let output = match bounded_output_cancellable(
             Command::new(self.command_path())
                 .args(self.args_for_query(query))
                 .env("GPOTLIGHT_PLUGIN_CONFIG", plugin_config_json(config)),
             PLUGIN_TIMEOUT,
             MAX_PLUGIN_OUTPUT,
+            cancellable,
         ) {
             Ok(output) if output.status.success() => output,
             Ok(output) => {
@@ -262,6 +274,7 @@ impl SearchPlugin for ExternalCommandPlugin {
                 );
                 return Vec::new();
             }
+            Err(_) if cancellable.is_cancelled() => return Vec::new(),
             Err(err) => {
                 tracing::warn!(
                     error = ?err,
@@ -301,9 +314,9 @@ impl SearchPlugin for ExternalCommandPlugin {
     }
 }
 
-// Own the process until it has been reaped. On timeout, excess output, or a read
-// error, terminate its process group as well: descendants can keep stdout open
-// after the original command exits.
+// Own the process until it has been reaped. On cancellation, timeout, excess
+// output, or a read error, terminate its process group as well: descendants can
+// keep stdout open after the original command exits.
 struct PluginProcess(Option<Child>);
 
 impl Drop for PluginProcess {
@@ -320,11 +333,42 @@ impl Drop for PluginProcess {
     }
 }
 
+struct CancellationFd<'a>(&'a gio::Cancellable);
+
+impl Drop for CancellationFd<'_> {
+    fn drop(&mut self) {
+        self.0.release_fd();
+    }
+}
+
+#[cfg(test)]
 fn bounded_output(
     command: &mut Command,
     timeout: Duration,
     max_output: usize,
 ) -> io::Result<Output> {
+    bounded_output_cancellable(command, timeout, max_output, &gio::Cancellable::new())
+}
+
+fn bounded_output_cancellable(
+    command: &mut Command,
+    timeout: Duration,
+    max_output: usize,
+    cancellable: &gio::Cancellable,
+) -> io::Result<Output> {
+    if cancellable.is_cancelled() {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "external plugin cancelled",
+        ));
+    }
+    let cancel_fd = cancellable.fd();
+    if cancel_fd == -1 {
+        return Err(io::Error::other(
+            "failed to acquire plugin cancellation descriptor",
+        ));
+    }
+    let _cancel_fd_guard = CancellationFd(cancellable);
     let deadline = Instant::now() + timeout;
     let child = command
         .stdin(Stdio::null())
@@ -346,6 +390,12 @@ fn bounded_output(
     let mut buffer = [0; 8192];
     let mut eof = false;
     loop {
+        if cancellable.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "external plugin cancelled",
+            ));
+        }
         if Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -389,16 +439,24 @@ fn bounded_output(
         } else {
             remaining
         };
-        let mut descriptor = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: descriptor points to a live pollfd, or nfds is zero after EOF.
+        let mut descriptors = [
+            libc::pollfd {
+                fd: if eof { -1 } else { fd },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: cancel_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: both descriptors remain owned for the entire poll. A negative
+        // stdout fd is ignored after EOF; cancellation still wakes the worker.
         let result = unsafe {
             libc::poll(
-                &mut descriptor,
-                if eof { 0 } else { 1 },
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
                 wait.as_millis().max(1).min(i32::MAX as u128) as i32,
             )
         };

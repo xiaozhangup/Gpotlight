@@ -1,7 +1,8 @@
 use crate::config::ConfigStore;
 use crate::i18n::I18n;
 use crate::plugin::{
-    activate_action, activate_result, SearchResult, SearchResultButton, SharedRegistry,
+    activate_action, activate_result, PluginResults, SearchResult, SearchResultButton,
+    SharedRegistry,
 };
 use crate::theme;
 use gtk::prelude::*;
@@ -37,6 +38,7 @@ pub struct SpotlightWindow {
     search_pending: Rc<Cell<bool>>,
     refresh_pending: Rc<RefCell<HashSet<String>>>,
     worker_running: Rc<Cell<bool>>,
+    active_search: Rc<RefCell<Option<gio::Cancellable>>>,
     config: Rc<RefCell<ConfigStore>>,
     plugins: SharedRegistry,
     ensure_plugins_loaded: Rc<dyn Fn()>,
@@ -143,6 +145,7 @@ impl SpotlightWindow {
             search_pending: Rc::new(Cell::new(false)),
             refresh_pending: Rc::new(RefCell::new(HashSet::new())),
             worker_running: Rc::new(Cell::new(false)),
+            active_search: Rc::new(RefCell::new(None)),
             config,
             plugins,
             ensure_plugins_loaded,
@@ -388,6 +391,9 @@ impl SpotlightWindow {
 
     fn cancel_pending_work(&self) {
         self.generation.set(self.generation.get().wrapping_add(1));
+        if let Some(cancellable) = self.active_search.borrow().as_ref() {
+            cancellable.cancel();
+        }
         if let Some(source) = self.search_delay.borrow_mut().take() {
             source.remove();
         }
@@ -469,7 +475,6 @@ impl SpotlightWindow {
                 let query = spotlight.entry.text().to_string();
                 let config = spotlight.config.borrow().current().clone();
                 let registry = spotlight.plugins.borrow().clone();
-                let refresh_id = plugin_id.clone();
                 let refresh_query = plugin_id.as_ref().and_then(|id| {
                     spotlight
                         .config
@@ -478,52 +483,59 @@ impl SpotlightWindow {
                         .or_else(|| query.trim().is_empty().then_some(""))
                         .map(str::to_owned)
                 });
-                // At most one query batch is active. New input replaces pending
-                // work; the GTK loop never waits for child processes or joins.
-                let found = gio::spawn_blocking(move || {
-                    if let Some(id) = refresh_id {
-                        refresh_query
-                            .map(|query| registry.search_plugin_with_config(&config, &id, &query))
-                            .unwrap_or_default()
+                let cancellable = gio::Cancellable::new();
+                *spotlight.active_search.borrow_mut() = Some(cancellable.clone());
+                let (sender, receiver) = async_channel::bounded::<PluginResults>(4);
+                // Reap cancelled commands before starting the next batch so the
+                // process limit also holds during rapid input and hide/reopen.
+                let worker = gio::spawn_blocking(move || {
+                    if let Some(id) = plugin_id {
+                        let results = refresh_query
+                            .map(|query| {
+                                registry.search_plugin_cancellable(
+                                    &config,
+                                    &id,
+                                    &query,
+                                    &cancellable,
+                                )
+                            })
+                            .unwrap_or_default();
+                        let _ = sender.send_blocking(PluginResults {
+                            plugin_id: id,
+                            results,
+                        });
                     } else {
-                        registry.search_blocking(&config, &query)
+                        registry.search_blocking_stream(&config, &query, &cancellable, |batch| {
+                            let _ = sender.send_blocking(batch);
+                        });
                     }
-                })
-                .await;
-                if generation != spotlight.generation.get() || !spotlight.window.is_visible() {
-                    continue;
-                }
-                let found = match found {
-                    Ok(found) => found,
-                    Err(_) => {
-                        tracing::warn!("background plugin search panicked");
-                        Vec::new()
+                });
+                while let Ok(batch) = receiver.recv().await {
+                    if generation != spotlight.generation.get() || !spotlight.window.is_visible() {
+                        continue;
                     }
-                };
-                let mut merged = if let Some(id) = plugin_id {
-                    spotlight
+                    let mut merged = spotlight
                         .results
                         .borrow()
                         .iter()
-                        .filter(|result| result.source_plugin_id.as_deref() != Some(id.as_str()))
+                        .filter(|result| {
+                            result.source_plugin_id.as_deref() != Some(batch.plugin_id.as_str())
+                        })
                         .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    spotlight.plugins.borrow().search_immediate(
-                        spotlight.config.borrow().current(),
-                        &spotlight.entry.text(),
-                    )
-                };
-                merged.extend(
-                    found.into_iter().filter(|result| {
+                        .collect::<Vec<_>>();
+                    merged.extend(batch.results.into_iter().filter(|result| {
                         !spotlight.entry.text().trim().is_empty() || result.pinned
-                    }),
-                );
-                let merged = spotlight
-                    .plugins
-                    .borrow()
-                    .rank_results(spotlight.config.borrow().current(), merged);
-                spotlight.apply_results(merged, true);
+                    }));
+                    let merged = spotlight
+                        .plugins
+                        .borrow()
+                        .rank_results(spotlight.config.borrow().current(), merged);
+                    spotlight.apply_results(merged, true);
+                }
+                if worker.await.is_err() {
+                    tracing::warn!("background plugin search panicked");
+                }
+                spotlight.active_search.borrow_mut().take();
             }
             spotlight.worker_running.set(false);
         });
@@ -666,6 +678,7 @@ impl SpotlightWindow {
             search_pending: self.search_pending.clone(),
             refresh_pending: self.refresh_pending.clone(),
             worker_running: self.worker_running.clone(),
+            active_search: self.active_search.clone(),
             config: self.config.clone(),
             plugins: self.plugins.clone(),
             ensure_plugins_loaded: self.ensure_plugins_loaded.clone(),

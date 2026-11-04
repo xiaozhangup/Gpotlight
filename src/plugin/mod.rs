@@ -33,6 +33,11 @@ pub struct SearchResultButton {
     pub refresh_after_ms: Option<u64>,
 }
 
+pub struct PluginResults {
+    pub plugin_id: String,
+    pub results: Vec<SearchResult>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginAction {
     LaunchDesktopFile(String),
@@ -72,6 +77,16 @@ pub trait SearchPlugin {
 
     fn config_items(&self) -> Vec<PluginConfigItem> {
         Vec::new()
+    }
+
+    fn query_cancellable(
+        &self,
+        query: &str,
+        config: &PluginConfig,
+        app_config: &AppConfig,
+        _cancellable: &gio::Cancellable,
+    ) -> Vec<SearchResult> {
+        self.query_with_config(query, config, app_config)
     }
 }
 
@@ -129,15 +144,36 @@ impl PluginRegistry {
                 Some((plugin, plugin_config, plugin_query))
             })
             .flat_map(|(plugin, plugin_config, plugin_query)| {
-                self.query_plugin(plugin.as_ref(), plugin_query, plugin_config, config)
+                self.query_plugin(plugin.as_ref(), plugin_query, plugin_config, config, None)
             })
             .filter(|result| !query_is_empty || result.pinned)
             .collect()
     }
 
-    /// Called off the GTK main thread. Only potentially blocking plugins need
-    /// parallel execution; one of the workers reuses the caller's thread.
+    #[cfg(test)]
     pub fn search_blocking(&self, config: &AppConfig, query: &str) -> Vec<SearchResult> {
+        let results = std::sync::Mutex::new(Vec::new());
+        self.search_blocking_stream(config, query, &gio::Cancellable::new(), |batch| {
+            results.lock().unwrap().extend(batch.results);
+        });
+        let mut results = results.into_inner().unwrap();
+        results.sort_by_key(|result| {
+            self.plugins
+                .iter()
+                .position(|plugin| Some(plugin.id()) == result.source_plugin_id.as_deref())
+        });
+        results
+    }
+
+    /// Called off the GTK main thread. Deliver each plugin as it finishes,
+    /// keeping at most four commands active until cancellation is reaped.
+    pub fn search_blocking_stream(
+        &self,
+        config: &AppConfig,
+        query: &str,
+        cancellable: &gio::Cancellable,
+        publish: impl Fn(PluginResults) + Sync,
+    ) {
         let scoped = self.has_triggered_plugin(config, query);
         let calls: Vec<_> = self
             .plugins
@@ -154,23 +190,36 @@ impl PluginRegistry {
             })
             .collect();
         if calls.is_empty() {
-            return Vec::new();
+            return;
         }
 
         // Bound CPU/process pressure even when many external plugins are installed.
-        // Slots retain registry order regardless of which worker finishes first.
         const MAX_CONCURRENT_PLUGINS: usize = 4;
         let next = std::sync::atomic::AtomicUsize::new(0);
-        let slots: Vec<_> = (0..calls.len())
-            .map(|_| std::sync::OnceLock::new())
-            .collect();
+        let query_is_empty = query.trim().is_empty();
         let run = || loop {
+            if cancellable.is_cancelled() {
+                break;
+            }
             let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let Some((plugin, plugin_config, plugin_query)) = calls.get(index) else {
                 break;
             };
-            let results = self.query_plugin(plugin.as_ref(), plugin_query, plugin_config, config);
-            let _ = slots[index].set(results);
+            let mut results = self.query_plugin(
+                plugin.as_ref(),
+                plugin_query,
+                plugin_config,
+                config,
+                Some(cancellable),
+            );
+            if cancellable.is_cancelled() {
+                break;
+            }
+            results.retain(|result| !query_is_empty || result.pinned);
+            publish(PluginResults {
+                plugin_id: plugin.id().to_string(),
+                results,
+            });
         };
         std::thread::scope(|scope| {
             for _ in 1..calls.len().min(MAX_CONCURRENT_PLUGINS) {
@@ -178,13 +227,6 @@ impl PluginRegistry {
             }
             run();
         });
-        let mut results: Vec<_> = slots
-            .into_iter()
-            .flat_map(|slot| slot.into_inner().unwrap_or_default())
-            .collect();
-        let query_is_empty = query.trim().is_empty();
-        results.retain(|result| !query_is_empty || result.pinned);
-        results
     }
 
     fn has_triggered_plugin(&self, config: &AppConfig, query: &str) -> bool {
@@ -232,11 +274,22 @@ impl PluginRegistry {
         results
     }
 
+    #[cfg(test)]
     pub fn search_plugin_with_config(
         &self,
         config: &AppConfig,
         plugin_id: &str,
         query: &str,
+    ) -> Vec<SearchResult> {
+        self.search_plugin_cancellable(config, plugin_id, query, &gio::Cancellable::new())
+    }
+
+    pub fn search_plugin_cancellable(
+        &self,
+        config: &AppConfig,
+        plugin_id: &str,
+        query: &str,
+        cancellable: &gio::Cancellable,
     ) -> Vec<SearchResult> {
         let Some(plugin) = self.plugins.iter().find(|plugin| plugin.id() == plugin_id) else {
             return Vec::new();
@@ -245,7 +298,13 @@ impl PluginRegistry {
         if !plugin_config.enabled {
             return Vec::new();
         }
-        self.query_plugin(plugin.as_ref(), query, plugin_config, config)
+        self.query_plugin(
+            plugin.as_ref(),
+            query,
+            plugin_config,
+            config,
+            Some(cancellable),
+        )
     }
 
     fn query_plugin(
@@ -254,17 +313,22 @@ impl PluginRegistry {
         query: &str,
         plugin_config: &PluginConfig,
         app_config: &AppConfig,
+        cancellable: Option<&gio::Cancellable>,
     ) -> Vec<SearchResult> {
-        let mut results = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            plugin.query_with_config(query, plugin_config, app_config)
-        }))
-        .unwrap_or_else(|_| {
-            tracing::warn!(
-                plugin_id = plugin.id(),
-                "plugin query panicked, skipping its results"
-            );
-            Vec::new()
-        });
+        let mut results =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match cancellable {
+                Some(cancellable) => {
+                    plugin.query_cancellable(query, plugin_config, app_config, cancellable)
+                }
+                None => plugin.query_with_config(query, plugin_config, app_config),
+            }))
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    plugin_id = plugin.id(),
+                    "plugin query panicked, skipping its results"
+                );
+                Vec::new()
+            });
         for result in &mut results {
             result.source_plugin_id = Some(plugin.id().to_string());
         }

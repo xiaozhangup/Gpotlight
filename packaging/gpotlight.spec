@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           gpotlight
-Version:        0.1.7
+Version:        0.1.8
 Release:        1%{?dist}
 Summary:        Spotlight-style launcher for GNOME
 
@@ -50,6 +50,10 @@ cp -a plugins/. %{buildroot}%{_datadir}/gpotlight/plugins/
 %{_datadir}/gpotlight/plugins
 
 %changelog
+* Wed Nov 04 2026 Gpotlight Developers <noreply@example.com> - 0.1.8-1
+- Cancel obsolete plugin queries and reap their processes when input changes or the launcher hides.
+- Display each plugin's results as it finishes while preserving ranking and selection.
+
 * Wed Nov 04 2026 Gpotlight Developers <noreply@example.com> - 0.1.7-1
 - Refresh launcher styling and request Wayland background blur on supported desktops.
 
